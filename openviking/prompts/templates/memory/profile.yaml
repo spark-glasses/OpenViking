@@ -1,25 +1,68 @@
 memory_type: profile
 description: |
   # Task Objective
-  User profile memory - captures an identity summary of who the user is as a person.
-  Extract relatively stable personal attributes that define the user's identity at a high level.
-  Keep the result Complete but minimal.
-  Profile should stay as an identity summary, not a place for endlessly growing details.
-  Do NOT include transient conversation content or temporary mood states.
+  Maintain the user's own anchor: one evolving profile that explains who the
+  user is, what currently matters to them, and how they describe their life.
+  Combine related information across conversations into a coherent document.
+  Preserve useful specifics instead of reducing the user to a short biography
+  or a personality label.
 
-  # Rules
-  - Rewrite the full profile into a Complete but minimal version each time
-  - Do not append to the old profile
-  - Keep the profile to 5-8 bullets total
-  - Each item: self-contained, declarative sentence, < 30 words
-  - Extract only facts stated/confirmed by user; no guesses
-  - Focus on persistent information, not temporary situations
-  - Keep only high-level identity facts in profile
-  - If preference, habit, taste, workflow style, or other reusable behavioral detail would make profile grow, migrate it to preferences instead
-  - Do not keep concrete preference examples in profile
-  - Forbidden: events, only-assistant content, sensitive/private info, trivial updates
-  - Merge similar items; keep latest if conflicting
+  # Scope
+  - Basic information and background: names, residence, roles, affiliations,
+    personal website and other user-provided identifiers, relationships, and
+    meaningful education, work, or life transitions.
+  - Current focus and goals: ongoing pursuits, concerns, constraints, and what
+    the user is trying to achieve. Distinguish current priorities from enduring
+    commitments and include the source date when available.
+  - Values and priorities: what the user says matters to them, the tradeoffs
+    they describe, and the reasons they give for important choices.
+  - Self-description and personal narrative: how the user describes their
+    personality, strengths, difficulties, and the meaning of life experiences.
+    Attribute these accounts to the user rather than treating them as an
+    objective psychological assessment.
 
+  # Evidence
+  - Record information stated or confirmed by the user. Assistant suggestions,
+    questions, quoted third-party stories, and hypothetical examples are not
+    facts about the user.
+  - Preserve exact supported names, URLs, dates, and other useful details.
+    Keep available source references and dates close to the relevant account;
+    do not invent citations, dates, missing background, or causal explanations.
+  - Describe personality frameworks or assessment results only when supplied
+    or confirmed by the user, with their source and date when available.
+    Do not infer a personality type, diagnosis, trauma, or hidden motivation.
+  - Respect the user's established permission and exclusions for remembering
+    trauma or similarly intimate experiences. General profile memory does not
+    imply permission to retain every intimate detail. Do not solicit such
+    details to fill out a profile, or store passwords or authentication secrets.
+
+  # Updating
+  - Read the existing profile and integrate new information into it. Preserve
+    supported details from earlier conversations even when they are not
+    mentioned again. Absence from the latest conversation is not a correction.
+  - Merge repetition and update the relevant passage. Add detail when it
+    changes or deepens the understanding of the user; return no change when
+    the existing profile already captures it.
+  - Honor explicit corrections and requests to remove details from this
+    profile. Distinguish a corrected mistake from a real change in the user's
+    life. For real changes, retain prior context when it explains their
+    trajectory, clearly separating historical and current information.
+  - If two accounts conflict without a clear correction, retain their
+    attribution and timing rather than choosing an unsupported conclusion.
+  - Keep the document readable with concise sections. Do not delete distinct
+    useful information to meet a fixed bullet count or length target. Avoid
+    raw transcript dumps, repeated evidence, and a log of every interaction.
+
+  # Boundaries
+  - Specific reusable tastes, habits, and workflow preferences belong in
+    preferences. Broad values, life priorities, and self-narrative belong here;
+    do not move them out merely to shorten the profile.
+  - Include meaningful life transitions and ongoing concerns, but leave
+    isolated appointments, one-off requests, temporary moods, and individual
+    project updates in their relevant records unless the user connects them
+    to an enduring concern or personal meaning.
+  - This profile describes the user. Agent identity and behavior belong in
+    identity and soul, not in the user's profile.
 
 directory: "viking://user/{{ user_space }}/memories"
 filename_template: "profile.md"
@@ -28,25 +71,16 @@ fields:
   - name: content
     type: string
     description: |
-      User profile content in Markdown format describing "who the user is" as an identity summary.
-      Rewrite the full profile as a Complete but minimal version, rather than extending the old text.
-      Keep only the most important high-level identity facts, with 5-8 bullets total.
-      Only record objective statuses, do not record events or similar information.
-      If reusable preference-oriented details overflow profile scope, migrate them to preferences instead.
-      Even though this field uses patch semantics, you may use patch to rewrite the whole profile into a shorter minimal version when needed.
-      Prefer large-scale replacement over local edits when compressing an oversized profile.
-      [IMPORTANT] For changeable statuses, must include the last updated time in the format: (as of 2023-06-09)
-      Example:
-      # Caroline
-      - Date of birth
-      - Gender: Female
-      - Age: 25 (as of 2023-06-09)
-      - Nickname
-      - Place of origin
-      - Place of residence
-      - Regular city of residence
-      - Current occupation
-      - Relationship status: Single (as of 2023-06-09)
-      - Career plan
-      etc.
+      A coherent Markdown profile of the user in their language. Organize known
+      information into readable sections covering basic information and
+      background, current focus and goals, values and priorities, and
+      self-description and personal narrative. Omit empty sections instead of
+      guessing content or inserting a questionnaire.
+
+      Integrate updates into the existing document while preserving distinct,
+      supported information and important life history. Keep exact personal
+      identifiers such as a website URL when provided. Retain available source
+      references and time context, and make user self-reports distinguishable
+      from confirmed factual details. Follow the evidence, updating, and scope
+      rules above; a newer conversation does not replace the whole user's story.
     merge_op: patch

@@ -275,11 +275,14 @@ class TaskTracker:
         *,
         account_id: str,
         user_id: str,
+        require_no_existing: bool = False,
     ) -> Optional[TaskRecord]:
         """Atomically check for running tasks and create a new one if none exist.
 
         Returns TaskRecord on success, None if a running task already exists.
         This eliminates the race condition between has_running() and create().
+        require_no_existing also rejects terminal records, for one-shot email
+        archive creation racing with orphan recovery.
         """
         self._validate_owner(account_id, user_id)
         async with self._async_lock:
@@ -293,7 +296,7 @@ class TaskTracker:
                 t.task_type == task_type
                 and t.resource_id == resource_id
                 and self._matches_owner(t, account_id, user_id)
-                and t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+                and (require_no_existing or t.status in (TaskStatus.PENDING, TaskStatus.RUNNING))
                 for t in tasks
             )
             if has_active:

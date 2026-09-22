@@ -29,7 +29,11 @@ async def get_task(
     """Get the status of a single background task."""
     tracker = get_task_tracker()
     if _ctx.role == Role.ROOT:
-        task = await tracker.get(task_id)
+        # ROOT requests may select a tenant/user. Warm that owner's persistent
+        # records before falling back to the existing global cache/system view.
+        task = await tracker.get(task_id, account_id=_ctx.account_id, user_id=_ctx.user.user_id)
+        if task is None:
+            task = await tracker.get(task_id)
         if task is None:
             task = await tracker.get(
                 task_id,
@@ -64,6 +68,14 @@ async def list_tasks(
     """List background tasks with optional filters."""
     tracker = get_task_tracker()
     if _ctx.role == Role.ROOT:
+        scoped_tasks = await tracker.list_tasks(
+            task_type=task_type,
+            status=status,
+            resource_id=resource_id,
+            limit=limit,
+            account_id=_ctx.account_id,
+            user_id=_ctx.user.user_id,
+        )
         system_tasks = await tracker.list_tasks(
             task_type=task_type,
             status=status,
@@ -80,6 +92,7 @@ async def list_tasks(
         )
         tasks_by_id = {task.task_id: task for task in cached_tasks}
         tasks_by_id.update({task.task_id: task for task in system_tasks})
+        tasks_by_id.update({task.task_id: task for task in scoped_tasks})
         tasks = sorted(tasks_by_id.values(), key=lambda task: task.created_at, reverse=True)[:limit]
     else:
         tasks = await tracker.list_tasks(

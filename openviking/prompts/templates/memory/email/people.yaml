@@ -1,0 +1,19 @@
+memory_type: people
+description: |
+  A cumulative understanding of one confirmed person, their relationships and ongoing matters.
+  Update the same document across batches; preserve existing facts and concrete dates.
+  Use email:UUID citations for evidence. Uncertain identity links belong in questions.
+directory: "viking://user/{{ user_space }}/memories/people"
+filename_template: "person.md"
+enabled: true
+embedding_template: "{{ content }}"
+overview_template: |-
+  # People
+  {% for item in items %}
+  - [{{ item.file_name }}](./{{ item.file_name }})
+  {% endfor %}
+fields:
+  - name: content
+    type: string
+    description: "Readable Markdown about the confirmed person, relationships, ongoing matters, dated changes and source citations."
+    merge_op: patch

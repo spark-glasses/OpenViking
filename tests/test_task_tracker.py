@@ -547,3 +547,58 @@ async def test_session_service_get_commit_task_also_filters_account():
     )
 
     assert other_account_result is None
+
+
+async def test_one_shot_task_creation_refuses_completed_task_after_cache_restart():
+    store = PersistentTaskStore(_FakeAgfs())
+    original = TaskTracker(store=store)
+    task = await original.create_if_no_running(
+        "session_commit", "email-batch", **_owner_kwargs(), require_no_existing=True
+    )
+    await original.complete(task.task_id, {}, **_owner_kwargs())
+    restarted = TaskTracker(store=store)
+    assert (
+        await restarted.create_if_no_running(
+            "session_commit", "email-batch", **_owner_kwargs(), require_no_existing=True
+        )
+        is None
+    )
+    assert (
+        await restarted.create_if_no_running("session_commit", "email-batch", **_owner_kwargs())
+        is not None
+    )
+
+
+async def test_root_task_routes_load_selected_owner_after_restart(monkeypatch):
+    from openviking.server.routers import tasks as routes
+
+    store = PersistentTaskStore(_FakeAgfs())
+    original = TaskTracker(store=store)
+    task = await original.create("session_commit", resource_id="email-batch", **_owner_kwargs())
+    await original.complete(task.task_id, {"archive_uri": "archive"}, **_owner_kwargs())
+    ctx = RequestContext(user=UserIdentifier("acme", "alice"), role=Role.ROOT)
+    monkeypatch.setattr(routes, "get_task_tracker", lambda: TaskTracker(store=store))
+    listed = await routes.list_tasks(
+        task_type="session_commit", status=None, resource_id="email-batch", limit=10, _ctx=ctx
+    )
+    assert [row["task_id"] for row in listed.result] == [task.task_id]
+    fetched = await routes.get_task(task.task_id, _ctx=ctx)
+    assert fetched.result["status"] == "completed"
+
+
+async def test_task_routes_preserve_non_root_owner_scope_with_warm_cache(monkeypatch):
+    from openviking.server.routers import tasks as routes
+    from openviking_cli.exceptions import OpenVikingError
+
+    tracker = TaskTracker(store=PersistentTaskStore(_FakeAgfs()))
+    alice = await tracker.create("session_commit", resource_id="email-batch", **_owner_kwargs())
+    monkeypatch.setattr(routes, "get_task_tracker", lambda: tracker)
+    ctx = RequestContext(user=UserIdentifier("acme", "bob"), role=Role.USER)
+    with pytest.raises(OpenVikingError):
+        await routes.get_task(alice.task_id, _ctx=ctx)
+    listed = await routes.list_tasks(
+        task_type=None, status=None, resource_id=None, limit=10, _ctx=ctx
+    )
+    assert listed.result == []
+    root = RequestContext(user=UserIdentifier("acme", "bob"), role=Role.ROOT)
+    assert (await routes.get_task(alice.task_id, _ctx=root)).result["task_id"] == alice.task_id

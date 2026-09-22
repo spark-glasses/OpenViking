@@ -232,6 +232,9 @@ class SessionCompressorV2:
         allowed_memory_types: Optional[set[str]] = None,
         allow_self_memory: bool = True,
         allowed_peer_ids: Optional[set[str]] = None,
+        email_context: Optional[Dict[str, Any]] = None,
+        email_attempt_id: Optional[str] = None,
+        question_context: Optional[Dict[str, Any]] = None,
     ) -> List[Context]:
         """Extract long-term memories from messages using v2 templating system.
 
@@ -266,7 +269,23 @@ class SessionCompressorV2:
         from openviking.session.memory.memory_type_registry import create_default_registry
 
         registry = create_default_registry()
-        if allow_self_memory:
+        if email_context:
+            from openviking.session.memory.email_context import EMAIL_MEMORY_TYPES, EmailContext
+            from openviking.session.memory.email_context_provider import create_email_registry
+
+            spec = EmailContext.model_validate(email_context)
+            spec.validate_owner(ctx)
+            registry = create_email_registry(spec)
+            allowed_memory_types = set(EMAIL_MEMORY_TYPES)
+            allow_self_memory = True
+            allowed_peer_ids = set()
+        if question_context:
+            from openviking.session.memory.question_answer_context_provider import answer_registry
+
+            registry = answer_registry(question_context["subject"])
+            allowed_memory_types = {"people", "profile", "preferences", "entities", "events"}
+            allowed_peer_ids = set()
+        if allow_self_memory and not email_context and not question_context:
             await registry.initialize_memory_files(
                 ctx,
                 allowed_memory_types=allowed_memory_types,
@@ -289,25 +308,88 @@ class SessionCompressorV2:
         lock_manager = None
         transaction_handle = None
         if viking_fs and hasattr(viking_fs, "agfs") and viking_fs.agfs:
-            init_lock_manager(viking_fs.agfs)
-            lock_manager = get_lock_manager()
+            if email_context:
+                try:
+                    lock_manager = get_lock_manager()
+                except RuntimeError:
+                    lock_manager = init_lock_manager(viking_fs.agfs)
+            else:
+                init_lock_manager(viking_fs.agfs)
+                lock_manager = get_lock_manager()
             transaction_handle = lock_manager.create_handle()
         else:
             logger.debug("AGFS unavailable, running memory extraction without locks")
 
+        recovery_uris = []
         try:
             from openviking.session.memory.session_extract_context_provider import (
                 SessionExtractContextProvider,
             )
 
-            context_provider = SessionExtractContextProvider(
+            provider_class = SessionExtractContextProvider
+            provider_kwargs = {}
+            if email_context:
+                from openviking.session.memory.email_context_provider import EmailContextProvider
+
+                provider_class = EmailContextProvider
+                provider_kwargs = {
+                    "email_context": email_context,
+                    "archive_uri": archive_uri,
+                    "attempt_id": email_attempt_id,
+                }
+            if question_context:
+                from openviking.session.memory.question_answer_context_provider import (
+                    QuestionAnswerContextProvider,
+                )
+
+                provider_class = QuestionAnswerContextProvider
+                provider_kwargs = {"question_context": question_context}
+            context_provider = provider_class(
                 messages=messages,
                 latest_archive_overview=latest_archive_overview,
                 isolation_handler=None,
                 ctx=ctx,
                 viking_fs=viking_fs,
                 transaction_handle=transaction_handle,
+                **provider_kwargs,
             )
+            if email_context and archive_uri:
+                from openviking_cli.exceptions import NotFoundError
+
+                try:
+                    previous = json.loads(
+                        await viking_fs.read_file(f"{archive_uri}/email_result.json", ctx=ctx)
+                    )
+                except NotFoundError:
+                    previous = {}
+                if (
+                    previous.get("batchId") == email_context["batchId"]
+                    and previous.get("outcome") == "failed"
+                ):
+                    recovery_uris = list(
+                        dict.fromkeys(
+                            previous.get("writtenUris", [])
+                            + previous.get("editedUris", [])
+                            + previous.get("reindexedUris", [])
+                        )
+                    )
+                    if len(recovery_uris) > 100:
+                        raise ValueError("Too many recovery targets")
+                    for uri in recovery_uris:
+                        context_provider._check_uri(uri)
+                        relative = uri[len(context_provider.root_uri) :]
+                        from openviking.session.memory.question_store import is_question_uri
+
+                        if relative.split("/", 1)[
+                            0
+                        ] not in EMAIL_MEMORY_TYPES and not is_question_uri(uri, ctx):
+                            raise ValueError("Recovery target outside email memory types")
+                        if (
+                            relative.startswith("people/")
+                            and uri != context_provider.spec.personMemoryUri
+                            and not is_question_uri(uri, ctx)
+                        ):
+                            raise ValueError("Recovery target is a different person")
             await context_provider.prepare_extraction_messages()
             extract_context = context_provider.get_extract_context()
             isolation_handler = MemoryIsolationHandler(
@@ -348,14 +430,23 @@ class SessionCompressorV2:
                 retry_count = 0
                 last_lock_retry_warning_at = 0.0
 
+                # Email jobs must remain bounded even while waiting for another writer.
+                lock_deadline = asyncio.get_running_loop().time() + 45 if email_context else None
                 # 循环重试获取锁（机制确保不会死锁）
                 while True:
-                    lock_acquired = await lock_manager.acquire_exact_tree_batch(
+                    acquire = lock_manager.acquire_exact_tree_batch(
                         transaction_handle,
                         exact_paths=exact_lock_paths,
                         tree_paths=tree_lock_dirs,
                         timeout=None,
                     )
+                    if lock_deadline is not None:
+                        remaining = max(0.001, lock_deadline - asyncio.get_running_loop().time())
+                        lock_acquired = await asyncio.wait_for(acquire, timeout=remaining)
+                        if not lock_acquired and asyncio.get_running_loop().time() >= lock_deadline:
+                            raise TimeoutError("Email memory lock wait exceeded 45 seconds")
+                    else:
+                        lock_acquired = await acquire
                     if lock_acquired:
                         break
                     retry_count += 1
@@ -376,13 +467,29 @@ class SessionCompressorV2:
             orchestrator._transaction_handle = transaction_handle  # 传递给 ExtractLoop
 
             # Run ReAct orchestrator
-            operations, tools_used = await orchestrator.run()
+            if email_context:
+                orchestrator.max_iterations = 10
+                operations, tools_used = await asyncio.wait_for(orchestrator.run(), timeout=180)
+                if operations is not None:
+                    context_provider.validate_operations(operations)
+                    if operations.upsert_operations or recovery_uris:
+                        # Revalidate the live binding after reasoning and immediately before writes.
+                        # Spark's authenticated source bridge rejects stale/deleted batch bindings.
+                        await context_provider._email_request(
+                            "searchEmails",
+                            {"contactId": email_context["contactId"], "maxResults": 1},
+                        )
+            else:
+                operations, tools_used = await orchestrator.run()
+                if question_context and operations is not None:
+                    context_provider.validate_operations(operations)
 
             if operations is None:
                 tracer.info("No memory operations generated")
                 result = MemoryUpdateResult()
             else:
                 updater = self._get_or_create_updater(registry, transaction_handle)
+                updater.strict_merge_errors = bool(email_context or question_context)
 
                 # Apply operations with isolation_handler
                 result = await updater.apply_operations(
@@ -397,6 +504,30 @@ class SessionCompressorV2:
                     f"edited={len(result.edited_uris)}, deleted={len(result.deleted_uris)}, "
                     f"errors={len(result.errors)}"
                 )
+
+            if email_context and recovery_uris:
+                # A previous attempt may have written files and then failed indexing/summary.
+                # Reindex those files even if this reasoning pass correctly emits no new edits.
+                retry_index_result = MemoryUpdateResult()
+                retry_index_result.edited_uris = [
+                    uri
+                    for uri in recovery_uris
+                    if uri not in result.written_uris + result.edited_uris
+                ]
+                recovery_updater = self._get_or_create_updater(registry, transaction_handle)
+                recovery_updater.strict_merge_errors = True
+                await recovery_updater._vectorize_memories(
+                    retry_index_result,
+                    ctx,
+                    extract_context=extract_context,
+                    uri_memory_type_map={
+                        uri: "questions"
+                        if is_question_uri(uri, ctx)
+                        else uri[len(context_provider.root_uri) :].split("/", 1)[0]
+                        for uri in retry_index_result.edited_uris
+                    },
+                )
+                result.errors.extend(retry_index_result.errors)
 
             # Write memory_diff.json to archive directory
             if archive_uri and viking_fs:
@@ -416,6 +547,44 @@ class SessionCompressorV2:
                     ctx=ctx,
                 )
                 logger.info(f"Wrote memory_diff.json to {archive_uri}")
+                if email_context:
+                    await context_provider.persist_record("memory_diff.json", memory_diff)
+
+            if email_context:
+                errors = [f"{uri}: {error}" for uri, error in result.errors]
+                changed = (
+                    any(
+                        memory_diff.get("operations", {}).get(kind)
+                        for kind in ("adds", "updates", "deletes")
+                    )
+                    if archive_uri and viking_fs
+                    else result.has_changes()
+                )
+                email_result = {
+                    "batchId": email_context["batchId"],
+                    "outcome": "failed"
+                    if errors
+                    else "applied"
+                    if changed or recovery_uris
+                    else "no_change",
+                    "partial": bool(errors and result.has_changes()),
+                    "taskId": email_attempt_id,
+                    "writtenUris": result.written_uris,
+                    "editedUris": result.edited_uris,
+                    "deletedUris": result.deleted_uris,
+                    "sourceRefs": sorted(context_provider._source_refs),
+                    "reindexedUris": recovery_uris,
+                    "questionRefs": await context_provider.read_updated_questions(
+                        result, recovery_uris
+                    )
+                    if not errors
+                    else [],
+                    "errors": errors,
+                }
+                await context_provider.persist_evidence()
+                await context_provider.persist_record("email_result.json", email_result)
+                if errors:
+                    raise RuntimeError("Email memory updates failed: " + "; ".join(errors))
 
             # Report telemetry stats.
             telemetry = get_current_telemetry()
@@ -464,6 +633,20 @@ class SessionCompressorV2:
             return contexts
 
         except Exception as e:
+            if email_context and "context_provider" in locals():
+                failed = {
+                    "batchId": email_context["batchId"],
+                    "taskId": email_attempt_id,
+                    "outcome": "failed",
+                    "partial": bool("result" in locals() and result.has_changes()),
+                    "writtenUris": result.written_uris if "result" in locals() else [],
+                    "editedUris": result.edited_uris if "result" in locals() else [],
+                    "errors": [str(e)],
+                    "reindexedUris": recovery_uris,
+                    "sourceRefs": sorted(context_provider._source_refs),
+                }
+                await context_provider.persist_evidence()
+                await context_provider.persist_record("email_result.json", failed)
             logger.error(f"Failed to extract memories with v2: {e}", exc_info=True)
             if strict_extract_errors:
                 raise

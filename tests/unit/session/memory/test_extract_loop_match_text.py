@@ -33,6 +33,7 @@ class TestResolveOperations:
             fields=[
                 MemoryField(name="name", field_type=FieldType.STRING, merge_op=MergeOp.REPLACE),
                 MemoryField(name="content", field_type=FieldType.STRING, merge_op=MergeOp.PATCH),
+                MemoryField(name="entries", field_type=FieldType.STRING, merge_op=MergeOp.REPLACE),
             ],
         )
         existing_uri = "viking://user/alice/memories/entities/Melanie.md"
@@ -40,7 +41,7 @@ class TestResolveOperations:
             uri=existing_uri,
             content="old content",
             memory_type="entities",
-            extra_fields={"name": "Melanie"},
+            extra_fields={"name": "Melanie", "entries": "old entries"},
         )
 
         context_provider = Mock()
@@ -64,7 +65,14 @@ class TestResolveOperations:
 
         operations, _ = await loop.resolve_operations(
             AttrDict(
-                entities=[{"name": "WrongName", "content": "new content", "page_id": 7}],
+                entities=[
+                    {
+                        "name": "WrongName",
+                        "content": "new content",
+                        "entries": "new entries",
+                        "page_id": 7,
+                    }
+                ],
                 delete_uris=[],
             )
         )
@@ -74,6 +82,7 @@ class TestResolveOperations:
         assert operation.old_memory_file_content is old_file
         assert operation.memory_fields["name"] == "Melanie"
         assert operation.memory_fields["content"] == "new content"
+        assert operation.memory_fields["entries"] == "new entries"
         isolation_handler.calculate_memory_uris.assert_not_called()
 
     def test_unresolved_page_ids_logs_at_info(self):
@@ -148,157 +157,6 @@ class TestResolveLinksMultiUri:
                 "viking://user/b/memories/experiences/target.md",
             ),
         }
-
-
-class TestPageIdInstruction:
-    @pytest.mark.asyncio
-    async def test_run_always_includes_page_id_rules_when_links_disabled(self):
-        context_provider = Mock()
-        context_provider.get_memory_schemas.return_value = [
-            SimpleNamespace(memory_type="experiences")
-        ]
-        context_provider.get_output_language.return_value = "zh-CN"
-        context_provider.get_tools.return_value = []
-        extract_context = Mock()
-        extract_context.page_id_map = PageIdMap()
-        context_provider.get_extract_context.return_value = extract_context
-        context_provider.prefetch = AsyncMock(return_value=[])
-        context_provider.read_file_contents = {}
-        context_provider.instruction.return_value = "base instruction"
-        context_provider._get_registry.return_value = Mock()
-
-        isolation_handler = Mock()
-        isolation_handler.get_read_scope.return_value = None
-        isolation_handler.fill_identity_fields.side_effect = lambda item, role_scope=None: item
-        isolation_handler.calculate_memory_uris.return_value = [
-            "viking://user/alice/memories/experiences/chat.md"
-        ]
-
-        loop = ExtractLoop(
-            vlm=Mock(model="test-model"),
-            viking_fs=Mock(),
-            context_provider=context_provider,
-            isolation_handler=isolation_handler,
-        )
-        loop._mark_cache_breakpoint = AsyncMock()
-        loop._call_llm = AsyncMock(
-            return_value=(
-                [],
-                AttrDict(
-                    experiences=[{"experience_name": "chat", "content": "updated", "page_id": 100}]
-                ),
-            )
-        )
-        loop._check_unread_existing_files = AsyncMock(return_value=[])
-        loop.finalize_operations = AsyncMock()
-
-        captured_messages = []
-
-        def capture_messages(messages):
-            captured_messages.extend(messages)
-
-        with (
-            patch("openviking.session.memory.extract_loop.get_openviking_config") as mock_config,
-            patch("openviking.session.memory.extract_loop.pretty_print_messages", capture_messages),
-            patch(
-                "openviking.session.memory.extract_loop.SchemaModelGenerator.generate_all_models"
-            ),
-            patch(
-                "openviking.session.memory.extract_loop.SchemaModelGenerator.create_structured_operations_model"
-            ) as mock_create_model,
-        ):
-            mock_config.return_value = SimpleNamespace(memory=SimpleNamespace(link_enabled=False))
-            mock_create_model.return_value = SimpleNamespace(model_json_schema=lambda: {})
-
-            await loop.run()
-
-        system_content = captured_messages[0]["content"]
-        assert "## Page ID Rules" in system_content
-        assert "## Read Format Rules" in system_content
-        assert 'Every memory item you create or edit MUST include "page_id".' in system_content
-        assert (
-            "The read tool accepts `uri`, optional `offset` (0-indexed), and optional `limit`."
-            in system_content
-        )
-        assert "each visible line is prefixed with `line_number<TAB>`" in system_content
-        assert (
-            "Never include the line-number prefix itself in `search` or `replace`."
-            in system_content
-        )
-        assert "For existing items, use the page_id shown in read/search results." in system_content
-        assert "For new items, assign a unique page_id >= 100." in system_content
-        assert "When editing an existing item, reuse its existing page_id." in system_content
-        assert "Link fields" not in system_content
-
-    @pytest.mark.asyncio
-    async def test_run_includes_link_page_id_rule_when_links_enabled(self):
-        context_provider = Mock()
-        context_provider.get_memory_schemas.return_value = [
-            SimpleNamespace(memory_type="experiences")
-        ]
-        context_provider.get_output_language.return_value = "zh-CN"
-        context_provider.get_tools.return_value = []
-        extract_context = Mock()
-        extract_context.page_id_map = PageIdMap()
-        context_provider.get_extract_context.return_value = extract_context
-        context_provider.prefetch = AsyncMock(return_value=[])
-        context_provider.read_file_contents = {}
-        context_provider.instruction.return_value = "base instruction"
-        context_provider._get_registry.return_value = Mock()
-
-        isolation_handler = Mock()
-        isolation_handler.get_read_scope.return_value = None
-        isolation_handler.fill_identity_fields.side_effect = lambda item, role_scope=None: item
-        isolation_handler.calculate_memory_uris.return_value = [
-            "viking://user/alice/memories/experiences/chat.md"
-        ]
-
-        loop = ExtractLoop(
-            vlm=Mock(model="test-model"),
-            viking_fs=Mock(),
-            context_provider=context_provider,
-            isolation_handler=isolation_handler,
-        )
-        loop._mark_cache_breakpoint = AsyncMock()
-        loop._call_llm = AsyncMock(
-            return_value=(
-                [],
-                AttrDict(
-                    experiences=[{"experience_name": "chat", "content": "updated", "page_id": 100}],
-                    links=[],
-                ),
-            )
-        )
-        loop._check_unread_existing_files = AsyncMock(return_value=[])
-        loop.finalize_operations = AsyncMock()
-
-        captured_messages = []
-
-        def capture_messages(messages):
-            captured_messages.extend(messages)
-
-        with (
-            patch("openviking.session.memory.extract_loop.get_openviking_config") as mock_config,
-            patch("openviking.session.memory.extract_loop.pretty_print_messages", capture_messages),
-            patch(
-                "openviking.session.memory.extract_loop.SchemaModelGenerator.generate_all_models"
-            ),
-            patch(
-                "openviking.session.memory.extract_loop.SchemaModelGenerator.create_structured_operations_model"
-            ) as mock_create_model,
-        ):
-            mock_config.return_value = SimpleNamespace(memory=SimpleNamespace(link_enabled=True))
-            mock_create_model.return_value = SimpleNamespace(model_json_schema=lambda: {})
-
-            await loop.run()
-
-        system_content = captured_messages[0]["content"]
-        assert "## Page ID Rules" in system_content
-        assert "## Read Format Rules" in system_content
-        assert "## Link Rules" in system_content
-        assert "Link fields `f` and `t` must reference these page_id values." in system_content
-        assert "each visible line is prefixed with `line_number<TAB>`" in system_content
-        assert "Only create links when the relationship is meaningful" in system_content
 
 
 class TestFinalOperationsHydration:

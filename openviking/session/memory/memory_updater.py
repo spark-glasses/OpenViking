@@ -91,6 +91,10 @@ async def write_stored_links(
             file_links[link.to_uri]["backlinks"].append(link)
 
     for uri, link_groups in file_links.items():
+        from openviking.session.memory.question_store import is_question_uri
+
+        if is_question_uri(uri, ctx):
+            continue
         try:
             content = await viking_fs.read_file(uri, ctx=ctx)
             if not content:
@@ -226,6 +230,7 @@ class ExtractContext:
     def get_year(self, ranges_str: str) -> str:
         """根据 ranges 字符串获取第一条消息的年份，fallback 到当前年份"""
         from datetime import datetime
+
         if not ranges_str:
             return str(datetime.now().year)
         msg_range = self.read_message_ranges(ranges_str)
@@ -237,6 +242,7 @@ class ExtractContext:
     def get_month(self, ranges_str: str) -> str:
         """根据 ranges 字符串获取第一条消息的月份，fallback 到当前月份"""
         from datetime import datetime
+
         if not ranges_str:
             return f"{datetime.now().month:02d}"
         msg_range = self.read_message_ranges(ranges_str)
@@ -248,6 +254,7 @@ class ExtractContext:
     def get_day(self, ranges_str: str) -> str:
         """根据 ranges 字符串获取第一条消息的日期，fallback 到当前日期"""
         from datetime import datetime
+
         if not ranges_str:
             return f"{datetime.now().day:02d}"
         msg_range = self.read_message_ranges(ranges_str)
@@ -634,6 +641,7 @@ class MemoryUpdater:
         self._registry = registry
         self._vikingdb = vikingdb
         self._transaction_handle = transaction_handle
+        self.strict_merge_errors = False
 
     def set_registry(self, registry: MemoryTypeRegistry) -> None:
         """Set the memory type registry for URI resolution."""
@@ -852,6 +860,7 @@ class MemoryUpdater:
                 uri in deleted_uris
                 or uri.endswith("/.overview.md")
                 or uri.endswith("/.abstract.md")
+                or uri.endswith("/questions.md")
             ):
                 continue
             try:
@@ -872,6 +881,27 @@ class MemoryUpdater:
         """Apply upsert operation from a flat model."""
         viking_fs = self._get_viking_fs()
 
+        if (
+            resolved_op.memory_type == "questions"
+            and "question_subject" in resolved_op.memory_fields
+        ):
+            import json
+
+            from openviking.session.memory.question_store import QuestionStore
+
+            for uri in resolved_op.uris:
+                await QuestionStore(viking_fs, ctx, self._vikingdb).discover(
+                    uri,
+                    resolved_op.memory_fields["question_subject"],
+                    json.loads(resolved_op.memory_fields["entries"]),
+                    metadata=resolved_op.memory_fields,
+                )
+            return
+
+        from openviking.session.memory.question_store import is_question_uri
+
+        if any(is_question_uri(uri, ctx) for uri in resolved_op.uris):
+            raise ValueError("Canonical question pages require the question merge entry point")
         memory_type = resolved_op.memory_type
         schema = self._registry.get(memory_type)
         # Process each URI independently
@@ -908,6 +938,8 @@ class MemoryUpdater:
                     try:
                         new_value = merge_op.apply(current_value, patch_value)
                     except Exception as e:
+                        if self.strict_merge_errors:
+                            raise
                         tracer.info(
                             f"[memory_updater] Skipping field update after merge_op failure: uri={uri}, field={field.name}, error={e}"
                         )
@@ -1025,6 +1057,10 @@ class MemoryUpdater:
 
     async def _apply_delete(self, uri: str, ctx: RequestContext) -> None:
         """Apply delete operation (uri is already a string)."""
+        from openviking.session.memory.question_store import is_question_uri
+
+        if is_question_uri(uri, ctx):
+            raise ValueError("Canonical question history cannot be deleted by extraction")
         viking_fs = self._get_viking_fs()
 
         # Delete from VikingFS
@@ -1158,9 +1194,13 @@ class MemoryUpdater:
                             embedding_msg.id,
                             "embedding enqueue returned false",
                         )
+                    if self.strict_merge_errors and not enqueued:
+                        raise RuntimeError("Memory embedding enqueue returned false")
                     logger.debug(f"Enqueued memory for vectorization: {uri}")
 
             except Exception as e:
+                if self.strict_merge_errors:
+                    result.add_error(uri, e)
                 tracer.error(f"Failed to vectorize memory {uri}: {e}")
         return attempted_count
 

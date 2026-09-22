@@ -127,6 +127,7 @@ class SessionService:
         ctx: RequestContext,
         session_id: Optional[str] = None,
         memory_policy: Optional[Dict[str, Any]] = None,
+        email_context: Optional[Dict[str, Any]] = None,
     ) -> Session:
         """Create a session and persist its root path.
 
@@ -146,7 +147,18 @@ class SessionService:
                 if await existing.exists():
                     raise AlreadyExistsError(f"Session '{session_id}' already exists")
             session = self.session(ctx, session_id)
-            if memory_policy is not None:
+            if email_context is not None:
+                from openviking.session.memory.email_context import (
+                    EmailContext,
+                    email_memory_policy,
+                )
+
+                spec = EmailContext.model_validate(email_context)
+                spec.validate_owner(ctx)
+                session.meta.email_context = spec.model_dump()
+                # Email tasks have a fixed write policy; callers cannot grant profile/peer access.
+                session.meta.memory_policy = email_memory_policy()
+            elif memory_policy is not None:
                 policy = MemoryPolicy.from_dict(memory_policy)
                 policy.validate_memory_types(
                     set(MemoryTypeRegistry().list_names(include_disabled=False))

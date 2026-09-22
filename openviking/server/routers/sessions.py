@@ -16,6 +16,7 @@ from openviking.server.identity import RequestContext
 from openviking.server.models import ErrorInfo, Response
 from openviking.server.responses import error_response
 from openviking.server.telemetry import run_operation
+from openviking.session.memory.email_context import EmailContext
 from openviking.telemetry import TelemetryRequest
 from openviking_cli.utils import get_logger
 
@@ -123,6 +124,7 @@ class CreateSessionRequest(BaseModel):
 
     session_id: Optional[str] = None
     memory_policy: Optional[Dict[str, Any]] = None
+    email_context: Optional[EmailContext] = None
     telemetry: TelemetryRequest = False
 
 
@@ -205,6 +207,7 @@ async def create_session(
             _ctx,
             request.session_id,
             memory_policy=request.memory_policy,
+            email_context=request.email_context.model_dump() if request.email_context else None,
         )
         return {
             "session_id": session.session_id,
@@ -352,6 +355,17 @@ async def get_session_archive(
             error=ErrorInfo(code="NOT_FOUND", message=f"Archive {archive_id} not found"),
         )
     return Response(status="ok", result=_to_jsonable(result))
+
+
+@router.post("/{session_id}/archives/{archive_id}/retry-email")
+async def retry_email_archive(
+    session_id: str,
+    archive_id: str,
+    _ctx: RequestContext = Depends(get_request_context),
+):
+    """Retry a failed frozen email batch; never rebuild input from live session metadata."""
+    session = await get_service().sessions.get(session_id, _ctx, auto_create=False)
+    return Response(status="ok", result=await session.retry_email_archive(archive_id))
 
 
 @router.delete("/{session_id}")

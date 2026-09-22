@@ -56,7 +56,7 @@ Memories are divided into user memories and Agent memories, representing learned
 
 | Category | Location | Description | Update Strategy |
 |----------|----------|-------------|-----------------|
-| **profile** | `user/memories/profile.md` | User basic info | ✅ Merge into one file |
+| **profile** | `user/memories/profile.md` | User identity, current direction, values, and life story | ✅ Merge into one file |
 | **preferences** | `user/memories/preferences/` | User preferences by topic | ✅ Appendable |
 | **entities** | `user/memories/entities/` | Entity memories (people, projects) | ✅ Appendable |
 | **events** | `user/memories/events/` | Event records (decisions, milestones) | ❌ No update |
@@ -64,6 +64,10 @@ Memories are divided into user memories and Agent memories, representing learned
 | **experiences** | `user/memories/experiences/` | Reusable execution insights | ✅ Mergeable |
 | **tools** | `user/memories/tools/` | Tool usage knowledge and best practices | ✅ Mergeable |
 | **skills** | `user/memories/skills/` | Skill execution knowledge and workflow strategies | ✅ Mergeable |
+
+The profile is a single-file reference for the user as a person. It retains concrete basic information, including exact names, cities, and personal website URLs, alongside current concerns and goals with their time context, stated values and tradeoffs, and the user’s own descriptions of their personality and life story. Preserve source and time context when available, and merge new information into the existing profile without dropping older facts merely because a new conversation does not mention them. Topic-specific preferences belong in `preferences`; the agent’s soul and identity are separate from this user profile.
+
+Changing the extraction template does not automatically replay all past sessions or rebuild existing profiles.
 
 ### Usage
 

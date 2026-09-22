@@ -496,6 +496,70 @@ class LockManager:
         except Exception as e:
             logger.warning(f"Cannot read archive for redo: {agfs_path}: {e}")
 
+        # Email recovery restores the frozen archive configuration and normal task path.
+        # It must never silently fall back to the generic conversation provider.
+        from openviking_cli.exceptions import NotFoundError
+
+        email_context = None
+        if info.get("email_context"):
+            try:
+                raw_spec = await viking_fs.read_file(f"{archive_uri}/email_context.json", ctx=ctx)
+                email_context = json.loads(raw_spec)
+            except NotFoundError as exc:
+                raise RuntimeError("Email recovery lost its frozen archive context") from exc
+        if email_context is not None:
+            from openviking.service.task_tracker import TaskStatus, get_task_tracker
+            from openviking.session import Session, create_session_compressor
+            from openviking.session.memory.email_context import EmailContext, email_memory_policy
+
+            spec = EmailContext.model_validate(email_context)
+            spec.validate_owner(ctx)
+            if not messages:
+                raise RuntimeError("Email recovery archive has no readable messages")
+            tracker = get_task_tracker()
+            task_id = info.get("task_id")
+            task = (
+                await tracker.get(task_id, account_id=account_id, user_id=user_id)
+                if task_id
+                else None
+            )
+            if task is not None and task.status == TaskStatus.COMPLETED:
+                return
+            if task is None:
+                task = await tracker.create(
+                    "session_commit",
+                    resource_id=session_uri.rsplit("/", 1)[-1],
+                    account_id=account_id,
+                    user_id=user_id,
+                )
+                task_id = task.task_id
+            session = Session(
+                viking_fs=viking_fs,
+                session_compressor=create_session_compressor(
+                    vikingdb=getattr(viking_fs, "vector_store", None)
+                ),
+                vikingdb_manager=getattr(viking_fs, "vector_store", None),
+                user=user,
+                ctx=ctx,
+                session_id=session_uri.rsplit("/", 1)[-1],
+                session_uri=session_uri,
+            )
+            await session.load()
+            await session._run_memory_extraction(
+                task_id=task_id,
+                archive_uri=archive_uri,
+                messages=messages,
+                usage_records=[],
+                first_message_id=messages[0].id,
+                last_message_id=messages[-1].id,
+                memory_policy=email_memory_policy(),
+                email_context=spec.model_dump(),
+            )
+            recovered = await tracker.get(task_id, account_id=account_id, user_id=user_id)
+            if recovered is None or recovered.status != TaskStatus.COMPLETED:
+                raise RuntimeError("Email extraction recovery did not complete")
+            return
+
         # 3. Re-extract memories (best-effort, only if archive was readable)
         if messages:
             session_id = session_uri.rstrip("/").rsplit("/", 1)[-1]

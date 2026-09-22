@@ -271,6 +271,8 @@ class SessionMeta:
     # process restarts.
     keep_recent_count: int = 0
     memory_policy: Optional[Dict[str, Any]] = None
+    email_context: Optional[Dict[str, Any]] = None
+    question_context: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = {
@@ -288,6 +290,10 @@ class SessionMeta:
             "pending_tokens": self.pending_tokens,
             "keep_recent_count": self.keep_recent_count,
             "memory_policy": dict(self.memory_policy) if self.memory_policy is not None else None,
+            "email_context": dict(self.email_context) if self.email_context is not None else None,
+            "question_context": dict(self.question_context)
+            if self.question_context is not None
+            else None,
         }
         if self.total_message_count is not None:
             data["total_message_count"] = self.total_message_count
@@ -331,6 +337,8 @@ class SessionMeta:
             pending_tokens=max(0, int(data.get("pending_tokens", 0) or 0)),
             keep_recent_count=max(0, int(data.get("keep_recent_count", 0) or 0)),
             memory_policy=data.get("memory_policy"),
+            email_context=data.get("email_context"),
+            question_context=data.get("question_context"),
         )
 
 
@@ -1101,7 +1109,21 @@ class Session:
         trace_id = tracer.get_trace_id()
         keep_recent_count = max(0, int(keep_recent_count or 0))
         effective_policy = MemoryPolicy.from_dict(self._meta.memory_policy)
-        _validate_memory_policy_types(effective_policy)
+        effective_email_context = None
+        if self._meta.email_context is not None:
+            from openviking.session.memory.email_context import (
+                EMAIL_MEMORY_TYPES,
+                EmailContext,
+                email_memory_policy,
+            )
+
+            spec = EmailContext.model_validate(self._meta.email_context)
+            spec.validate_owner(self.ctx)
+            effective_email_context = spec.model_dump()
+            effective_policy = MemoryPolicy.from_dict(email_memory_policy())
+            effective_policy.validate_memory_types(set(EMAIL_MEMORY_TYPES))
+        else:
+            _validate_memory_policy_types(effective_policy)
         effective_memory_policy = effective_policy.to_dict()
         logger.info(
             f"[TRACER] session_commit started, trace_id={trace_id}, "
@@ -1178,6 +1200,12 @@ class Session:
                 retained_messages = []
 
             try:
+                if effective_email_context is not None:
+                    await self._viking_fs.write_file(
+                        uri=f"{archive_uri}/email_context.json",
+                        content=json.dumps(effective_email_context),
+                        ctx=self.ctx,
+                    )
                 # Persist archive raw messages before trimming live messages so
                 # an archive write failure cannot drop live conversation history.
                 if self._viking_fs:
@@ -1219,12 +1247,41 @@ class Session:
 
         # Create TaskRecord for tracking Phase 2
         tracker = get_task_tracker()
-        task = await tracker.create(
-            "session_commit",
-            resource_id=self.session_id,
-            account_id=self.ctx.account_id,
-            user_id=self.ctx.user.user_id,
-        )
+        if effective_email_context is not None:
+            # A lost phase-1 response can be recovered from the frozen archive.
+            # Do not start a second loop if recovery beat this original request.
+            task = await tracker.create_if_no_running(
+                "session_commit",
+                resource_id=self.session_id,
+                account_id=self.ctx.account_id,
+                user_id=self.ctx.user.user_id,
+                require_no_existing=True,
+            )
+            if task is None:
+                tasks = await tracker.list_tasks(
+                    task_type="session_commit",
+                    resource_id=self.session_id,
+                    account_id=self.ctx.account_id,
+                    user_id=self.ctx.user.user_id,
+                    limit=1,
+                )
+                if not tasks:
+                    raise RuntimeError("Email archive task reconciliation failed")
+                return {
+                    "session_id": self.session_id,
+                    "status": "accepted",
+                    "task_id": tasks[0].task_id,
+                    "archive_uri": archive_uri,
+                    "archived": True,
+                    "trace_id": trace_id,
+                }
+        else:
+            task = await tracker.create(
+                "session_commit",
+                resource_id=self.session_id,
+                account_id=self.ctx.account_id,
+                user_id=self.ctx.user.user_id,
+            )
 
         asyncio.create_task(
             self._run_memory_extraction(
@@ -1235,6 +1292,7 @@ class Session:
                 first_message_id=messages_to_archive[0].id if messages_to_archive else "",
                 last_message_id=messages_to_archive[-1].id if messages_to_archive else "",
                 memory_policy=effective_memory_policy,
+                email_context=effective_email_context,
             )
         )
 
@@ -1257,6 +1315,7 @@ class Session:
         first_message_id: str,
         last_message_id: str,
         memory_policy: Optional[Dict[str, Any]],
+        email_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Phase 2: Extract memories, write relations, enqueue — runs in background."""
         import uuid
@@ -1281,7 +1340,12 @@ class Session:
         redo_log = lock_manager.redo_log
 
         try:
-            await self._wait_for_previous_archive_done(archive_index)
+            if email_context:
+                await asyncio.wait_for(
+                    self._wait_for_previous_archive_done(archive_index), timeout=60
+                )
+            else:
+                await self._wait_for_previous_archive_done(archive_index)
 
             await tracker.start(
                 task_id,
@@ -1303,6 +1367,9 @@ class Session:
                                 "account_id": self.ctx.account_id,
                                 "user_id": self.ctx.user.user_id,
                                 "role": str(self.ctx.role),
+                                "email_context": email_context,
+                                "memory_policy": memory_policy,
+                                "task_id": task_id,
                             },
                         )
 
@@ -1394,6 +1461,9 @@ class Session:
                     session_skill_extraction_enabled = (
                         session_skill_extraction_enabled and execution_memory_has_work
                     )
+                    if self._meta.question_context:
+                        execution_memory_has_work = False
+                        session_skill_extraction_enabled = False
                     has_policy_work = bool(long_term_has_work or execution_memory_has_work)
                     if self._session_compressor and has_policy_work:
                         logger.info(
@@ -1428,6 +1498,19 @@ class Session:
                                     allowed_memory_types=long_term_memory_types,
                                     allow_self_memory=self_memory_enabled,
                                     allowed_peer_ids=allowed_peer_ids,
+                                    **(
+                                        {"question_context": self._meta.question_context}
+                                        if self._meta.question_context
+                                        else {}
+                                    ),
+                                    **(
+                                        {
+                                            "email_context": email_context,
+                                            "email_attempt_id": task_id,
+                                        }
+                                        if email_context
+                                        else {}
+                                    ),
                                 )
 
                             extraction_tasks.append(
@@ -1561,6 +1644,8 @@ class Session:
                         timeout=_PHASE2_QUEUE_WAIT_TIMEOUT_SECONDS,
                     )
                 except TimeoutError as exc:
+                    if email_context:
+                        raise
                     telemetry.set_error(
                         "session.commit.phase2.wait_for_request",
                         "DEADLINE_EXCEEDED",
@@ -1572,6 +1657,10 @@ class Session:
                         telemetry.telemetry_id,
                         _PHASE2_QUEUE_WAIT_TIMEOUT_SECONDS,
                     )
+                if email_context:
+                    queues = request_wait_tracker.build_queue_status(telemetry.telemetry_id)
+                    if any(queue.get("error_count", 0) for queue in queues.values()):
+                        raise RuntimeError("Email memory indexing failed: " + json.dumps(queues))
             finally:
                 request_wait_tracker.cleanup(telemetry.telemetry_id)
                 unregister_telemetry(telemetry.telemetry_id)
@@ -1587,8 +1676,6 @@ class Session:
             # Write .done file last — signals that all state is finalized. We
             # only reach here when every Phase 2 step succeeded; any failure
             # would have raised above and marked the archive .failed.json.
-            await self._write_done_file(archive_uri, first_message_id, last_message_id)
-
             result_payload = {
                 "session_id": self.session_id,
                 "archive_uri": archive_uri,
@@ -1613,7 +1700,16 @@ class Session:
             }
             if memory_diff_uri:
                 result_payload["memory_diff_uri"] = memory_diff_uri
+            if email_context:
+                email_result_uri = f"{archive_uri}/email_result.json"
+                email_result = json.loads(
+                    await self._viking_fs.read_file(email_result_uri, ctx=self.ctx)
+                )
+                result_payload["email_result"] = email_result
+                result_payload["email_result_uri"] = email_result_uri
+                result_payload["email_evidence_uri"] = f"{archive_uri}/email_evidence.json"
 
+            await self._write_done_file(archive_uri, first_message_id, last_message_id)
             await tracker.complete(
                 task_id,
                 result_payload,
@@ -1622,6 +1718,10 @@ class Session:
             )
             logger.info(f"Session {self.session_id} memory extraction completed")
         except asyncio.CancelledError as e:
+            if email_context:
+                await self._record_email_phase_failure(
+                    archive_uri, task_id, email_context, f"cancelled: {e}"
+                )
             if redo_enabled and redo_task_id:
                 await redo_log.mark_done_async(redo_task_id)
             try:
@@ -1641,6 +1741,8 @@ class Session:
             logger.warning("Memory extraction cancelled for session %s", self.session_id)
             raise
         except Exception as e:
+            if email_context:
+                await self._record_email_phase_failure(archive_uri, task_id, email_context, str(e))
             if redo_enabled and redo_task_id:
                 await redo_log.mark_done_async(redo_task_id)
             await self._write_failed_marker(
@@ -1652,6 +1754,132 @@ class Session:
                 task_id, str(e), account_id=self.ctx.account_id, user_id=self.ctx.user.user_id
             )
             logger.exception(f"Memory extraction failed for session {self.session_id}")
+
+    async def _record_email_phase_failure(self, archive_uri, task_id, email_context, error):
+        """Do not leave an applied result behind when summary/indexing or task finalization failed."""
+        if not self._viking_fs:
+            return
+        # Task-store finalization can fail after the done marker was written.
+        # A stale marker must not turn a failed extraction into a completed retry.
+        try:
+            await self._viking_fs.rm(f"{archive_uri}/.done", ctx=self.ctx)
+        except Exception:
+            logger.debug("Could not remove email done marker for %s", archive_uri)
+        result = {}
+        try:
+            result = json.loads(
+                await self._viking_fs.read_file(f"{archive_uri}/email_result.json", ctx=self.ctx)
+            )
+        except Exception:
+            pass
+        result.update(
+            {
+                "batchId": email_context["batchId"],
+                "taskId": task_id,
+                "outcome": "failed",
+                "partial": bool(result.get("writtenUris") or result.get("editedUris")),
+                "writtenUris": result.get("writtenUris", []),
+                "editedUris": result.get("editedUris", []),
+                "questionRefs": [],
+                "errors": list(dict.fromkeys([*result.get("errors", []), error])),
+            }
+        )
+        try:
+            content = json.dumps(result, ensure_ascii=False)
+            await self._viking_fs.write_file(
+                f"{archive_uri}/attempts/{task_id}/email_result.json", content, ctx=self.ctx
+            )
+            await self._viking_fs.write_file(
+                f"{archive_uri}/email_result.json", content, ctx=self.ctx
+            )
+        except Exception:
+            logger.exception(
+                "Could not persist failed email result for session %s", self.session_id
+            )
+
+    async def retry_email_archive(self, archive_id: str) -> Dict[str, Any]:
+        """Resume a failed email archive without appending or archiving messages again."""
+        from openviking.service.task_tracker import get_task_tracker
+        from openviking.session.memory.email_context import EmailContext, email_memory_policy
+        from openviking_cli.exceptions import InvalidArgumentError, NotFoundError
+
+        if not re.fullmatch(r"archive_[0-9]+", archive_id):
+            raise InvalidArgumentError("Invalid archive ID")
+        archive_uri = f"{self._session_uri}/history/{archive_id}"
+        raw_spec = await self._viking_fs.read_file(
+            f"{archive_uri}/email_context.json", ctx=self.ctx
+        )
+        spec = EmailContext.model_validate(json.loads(raw_spec))
+        spec.validate_owner(self.ctx)
+        tracker = get_task_tracker()
+        try:
+            await self._viking_fs.read_file(f"{archive_uri}/.done", ctx=self.ctx)
+        except NotFoundError:
+            pass
+        else:
+            tasks = await tracker.list_tasks(
+                task_type="session_commit",
+                resource_id=self.session_id,
+                account_id=self.ctx.account_id,
+                user_id=self.ctx.user.user_id,
+                limit=1,
+            )
+            if tasks and tasks[0].status == "completed":
+                return {
+                    "session_id": self.session_id,
+                    "archive_uri": archive_uri,
+                    "task_id": tasks[0].task_id,
+                    "status": "completed",
+                }
+        # Also recover an archive whose phase-1 task registration never happened.
+        # Wait a minute and atomically require zero existing records, so an
+        # uncertain original request and recovery cannot start duplicate loops.
+        orphan = False
+        try:
+            await self._viking_fs.read_file(f"{archive_uri}/.failed.json", ctx=self.ctx)
+        except NotFoundError:
+            orphan = True
+            try:
+                committed_at = datetime.fromisoformat(
+                    self._meta.last_commit_at.replace("Z", "+00:00")
+                )
+                if committed_at.tzinfo is None:
+                    committed_at = committed_at.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - committed_at).total_seconds()
+            except (ValueError, TypeError, AttributeError):
+                raise InvalidArgumentError("Email orphan has no valid commit timestamp") from None
+            if self._archive_index_from_uri(archive_uri) != self._meta.commit_count or age < 60:
+                raise InvalidArgumentError("Email archive is not yet eligible for orphan recovery")
+        messages = await self._read_archive_messages(archive_uri)
+        if not messages:
+            raise InvalidArgumentError("Email archive has no readable messages")
+        task = await tracker.create_if_no_running(
+            "session_commit",
+            self.session_id,
+            account_id=self.ctx.account_id,
+            user_id=self.ctx.user.user_id,
+            require_no_existing=orphan,
+        )
+        if task is None:
+            raise InvalidArgumentError("An extraction task already exists for this session")
+        asyncio.create_task(
+            self._run_memory_extraction(
+                task_id=task.task_id,
+                archive_uri=archive_uri,
+                messages=messages,
+                usage_records=[],
+                first_message_id=messages[0].id,
+                last_message_id=messages[-1].id,
+                memory_policy=email_memory_policy(),
+                email_context=spec.model_dump(),
+            )
+        )
+        return {
+            "session_id": self.session_id,
+            "archive_uri": archive_uri,
+            "status": "accepted",
+            "task_id": task.task_id,
+        }
 
     async def _write_done_file(
         self,

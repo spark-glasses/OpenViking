@@ -8,6 +8,7 @@ Reference: bot/vikingbot/agent/loop.py AgentLoop structure
 
 import asyncio
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from openviking.models.vlm.base import ToolCall, VLMBase
@@ -111,6 +112,7 @@ class ExtractLoop:
         # Reset format retry counter for each run
         self._format_retry_count = 0
         patch_repair_count = 0
+        validation_repair_count = 0
 
         # 从 provider 获取 schemas（内部自动加载 registry）
         schemas = self.context_provider.get_memory_schemas(self.ctx)
@@ -133,7 +135,11 @@ class ExtractLoop:
 
         # 预计算 expected_fields
         config = get_openviking_config()
-        self._link_enabled = config.memory.link_enabled if config.memory else False
+        self._link_enabled = bool(
+            config.memory
+            and config.memory.link_enabled
+            and getattr(self.context_provider, "supports_links", True)
+        )
         self._expected_fields = ["delete_uris"]
         if self._link_enabled:
             self._expected_fields.append("links")
@@ -267,6 +273,27 @@ The final output of the model must strictly follow the JSON Schema format shown 
                         console=True,
                     )
                     continue
+                validate_operations = getattr(self.context_provider, "validate_operations", None)
+                if validate_operations is not None:
+                    try:
+                        validate_operations(final_operations)
+                    except ValueError as error:
+                        if validation_repair_count >= 2 or iteration >= max_iterations:
+                            raise
+                        validation_repair_count += 1
+                        self._disable_tools_for_iteration = False
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"These proposed memory operations cannot be applied: {error}. "
+                                    "Correct the operations before finalizing. For an email citation not yet supplied/read, "
+                                    "read its sourceRef with readEmail if relevant, or remove the unsupported claim. "
+                                    "Use the available tools if evidence is missing; keep confirmed identity and write scopes unchanged."
+                                ),
+                            }
+                        )
+                        continue
                 break
             # If no tool calls either, continue to next iteration (don't break!)
             tracer.error(
@@ -343,7 +370,11 @@ The final output of the model must strictly follow the JSON Schema format shown 
                             immutable_fields = {
                                 field.name
                                 for field in schema.fields
-                                if field.merge_op != MergeOp.PATCH
+                                if field.merge_op == MergeOp.IMMUTABLE
+                                or re.search(
+                                    r"{{\s*" + re.escape(field.name) + r"(?:\s*}}|[.\s|])",
+                                    schema.directory + "/" + schema.filename_template,
+                                )
                             }
                             for field_name in immutable_fields:
                                 if field_name in old_content.extra_fields:
@@ -363,6 +394,9 @@ The final output of the model must strictly follow the JSON Schema format shown 
                         extract_context=self._extract_context,
                     )
 
+                route_operation = getattr(self.context_provider, "route_operation", None)
+                if route_operation is not None:
+                    route_operation(resolved_op)
                 upsert_operations.append(resolved_op)
 
         delete_uris_raw = getattr(operations, "delete_uris", []) or []

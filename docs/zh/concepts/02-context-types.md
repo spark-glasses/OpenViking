@@ -56,7 +56,7 @@ results = client.find(
 
 | 分类 | 位置 | 说明 | 更新策略 |
 |------|------|------|----------|
-| **profile** | `user/memories/profile.md` | 用户基本信息 | ✅ 合并到单文件 |
+| **profile** | `user/memories/profile.md` | 用户身份、当前方向、价值取向与人生叙事 | ✅ 合并到单文件 |
 | **preferences** | `user/memories/preferences/` | 按主题的用户偏好 | ✅ 可追加 |
 | **entities** | `user/memories/entities/` | 实体记忆（人物、项目） | ✅ 可追加 |
 | **events** | `user/memories/events/` | 事件记录（决策、里程碑） | ❌ 不更新 |
@@ -64,6 +64,10 @@ results = client.find(
 | **experiences** | `user/memories/experiences/` | 可复用的执行经验 | ✅ 可合并 |
 | **tools** | `user/memories/tools/` | 工具使用经验与最佳实践 | ✅ 可合并 |
 | **skills** | `user/memories/skills/` | 技能执行经验与工作流策略 | ✅ 可合并 |
+
+`profile` 是关于用户自身的单文件档案。它保留具体的基础信息，包括准确的姓名、城市和个人网站 URL，也记录带有时点的当前关注与目标、用户表达的价值取向和取舍，以及用户自述的人格与人生叙事。有来源和时间信息时应予以保留；新信息增量合并到已有档案，不因新对话没有再次提及就删除旧事实。具体主题的偏好仍归入 `preferences`；Agent 的 soul 和 identity 与这份用户档案分别维护。
+
+修改提取模板不会自动重放所有旧会话，也不会自动重建已有档案。
 
 ### 使用
 

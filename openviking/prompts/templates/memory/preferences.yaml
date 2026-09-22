@@ -7,6 +7,9 @@ description: |
   Topics can be: code style, communication style, tools, workflow, food, commute, etc.
   Store different topics as separate memory files, do NOT mix unrelated preferences.
   Each topic should stay small and should not become a second profile.
+  Broad values, life priorities, ongoing personal goals, and self-narrative belong
+  in profile. Keep concrete tastes, habits, and workflow preferences here; do not
+  duplicate the user's broader account across preference topics.
   Keep each topic to roughly 3-8 bullets; if it grows beyond that or past 800 characters, split it into semantic subtopics.
 directory: "viking://user/{{ user_space }}/memories/preferences"
 filename_template: "{{ user }}/{{ topic }}.md"
@@ -52,5 +55,6 @@ fields:
       Keep each topic concise, usually 3-8 bullets; if it exceeds 8 bullets or 800 characters, split it into semantic subtopics.
       Use compact statements, and when useful include light evidence such as "evidenced by ... (as of YYYY-MM-DD)".
       Slight identity context is allowed only when it helps explain the preference, but this memory should not become a second profile.
+      Preserve the specific preference here; keep cross-topic values and the user's personal narrative in profile.
       Example: "User has shown clear preferences for Python code style in multiple conversations: dislikes using type hints, considers them redundant; requires concise function comments, limited to 1-2 lines; prefers direct implementation, avoids excessive fallbacks and over-engineering."
     merge_op: patch

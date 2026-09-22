@@ -86,6 +86,13 @@ class MemoryConfig(BaseModel):
         ),
     )
 
+    email_source_base_url: str = Field(
+        default="", description="Trusted Spark email read bridge URL; not model-controlled"
+    )
+    email_source_api_key: str = Field(
+        default="", repr=False, description="Server-to-server email bridge credential"
+    )
+
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="before")
