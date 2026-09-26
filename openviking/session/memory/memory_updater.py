@@ -1001,6 +1001,9 @@ class MemoryUpdater:
                     metadata["backlinks"] = existing_backlinks
 
             mf = MemoryFile.from_parsed(uri=uri, parsed=metadata)
+            from openviking.session.memory.person_identity import preserve_person_identity
+
+            mf = await preserve_person_identity(viking_fs, ctx, uri, mf)
             new_full_content = MemoryFileUtils.write(
                 mf,
                 content_template=schema.content_template,

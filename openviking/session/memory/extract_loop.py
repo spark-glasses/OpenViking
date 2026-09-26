@@ -276,6 +276,11 @@ The final output of the model must strictly follow the JSON Schema format shown 
                 validate_operations = getattr(self.context_provider, "validate_operations", None)
                 if validate_operations is not None:
                     try:
+                        validate_people = getattr(
+                            self.context_provider, "validate_canonical_people_operations", None
+                        )
+                        if validate_people is not None:
+                            validate_people(final_operations)
                         validate_operations(final_operations)
                     except ValueError as error:
                         if validation_repair_count >= 2 or iteration >= max_iterations:

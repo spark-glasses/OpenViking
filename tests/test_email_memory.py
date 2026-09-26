@@ -148,8 +148,8 @@ def test_email_config_round_trip_and_hard_limits(setup):
         setup.provider(anchorId="../another")
 
 
-def test_schemas_are_email_only_and_anchor_stays_stable(setup):
-    assert "people" not in MemoryTypeRegistry().list_names()
+def test_email_scope_and_anchor_stay_stable_with_shared_people_schema(setup):
+    assert "people" in MemoryTypeRegistry().list_names()
     provider = setup.provider(contactId="replacement-contact")
     assert provider._get_registry().get("people").filename_template == "stable-person.md"
     assert set(provider.get_tools()) == {"read", "search", "searchEmails", "readEmail"}

@@ -1,0 +1,20 @@
+memory_type: people
+description: |
+  Cumulative memory of an existing application-owned person anchor. Use this type
+  for a known contact instead of creating an entities person card. Read the canonical
+  person document first and reuse its page_id and anchorId. Never invent an anchor,
+  merge identities, or select an ambiguous same-name candidate. Contact identity
+  fields are managed by the application; preserve them and update supported narrative.
+directory: "viking://user/{{ user_space }}/memories/people"
+filename_template: "{{ anchorId }}.md"
+enabled: true
+embedding_template: "{{ content }}"
+fields:
+  - name: anchorId
+    type: string
+    description: "Stable anchor read from an existing person document; never invent an identity."
+    merge_op: immutable
+  - name: content
+    type: string
+    description: "Cumulative readable Markdown with supported facts, dates and original sources. Preserve application-managed contact identity."
+    merge_op: patch

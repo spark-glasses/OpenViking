@@ -91,7 +91,9 @@ register_tool(
 
 def create_email_registry(spec: EmailContext) -> MemoryTypeRegistry:
     registry = MemoryTypeRegistry()
-    registry.load_from_directory(str(Path(__file__).parents[2] / "prompts/templates/memory/email"))
+    registry.load_from_directory(
+        str(Path(__file__).parents[2] / "prompts/templates/memory/email"), replace=True
+    )
     anchor = spec.anchorId or spec.contactId
     for name in ("people",):
         schema = registry.get(name)

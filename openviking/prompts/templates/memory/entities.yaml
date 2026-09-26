@@ -3,6 +3,8 @@ description: |
   Third-party entity memory: stable cards for real people, organizations, places,
   works, media, products, animals/pets, programs, activities, and concepts the
   user mentions. Store what the entity is and its durable relations.
+  Existing application-owned contacts belong to their canonical people anchor,
+  never a new entities person card. Resolve ambiguous names before person writes.
 directory: "viking://user/{{ user_space }}/memories/entities"
 filename_template: "{{ category }}/{{ name }}.md"
 enabled: true

@@ -11,9 +11,15 @@ import os
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from openviking.core.namespace import user_space_fragment
 from openviking.message.part import TextPart, ToolPart
 from openviking.prompts.manager import PromptManager
 from openviking.server.identity import RequestContext, ToolContext
+from openviking.session.memory.canonical_people import (
+    MAX_PERSON_CANDIDATES,
+    MAX_PERSON_PREFETCH_READS,
+    CanonicalPeople,
+)
 from openviking.session.memory.core import ExtractContextProvider
 from openviking.session.memory.dataclass import MemoryFile
 from openviking.session.memory.memory_isolation_handler import (
@@ -25,6 +31,7 @@ from openviking.session.memory.memory_type_registry import (
     MemoryTypeRegistry,
     resolve_memory_templates_dir,
 )
+from openviking.session.memory.person_identity import load_active_people
 from openviking.session.memory.tools import (
     add_tool_call_pair_to_messages,
     get_tool,
@@ -84,6 +91,8 @@ class SessionExtractContextProvider(ExtractContextProvider):
         self._link_enabled = config.memory.link_enabled if config.memory else False
         self._vision_messages_prepared = False
         self._vision_vlm = None
+        self._canonical_people = CanonicalPeople([])
+        self._person_directory_loaded = False
 
     @property
     def read_file_contents(self) -> Dict[str, MemoryFile]:
@@ -114,6 +123,7 @@ class SessionExtractContextProvider(ExtractContextProvider):
 
     async def prepare_extraction_messages(self) -> None:
         """Prepare extraction-only messages before ranges and prompts are built."""
+        await self._ensure_person_directory()
         if self._vision_messages_prepared:
             return
         if isinstance(self.messages, list):
@@ -125,6 +135,84 @@ class SessionExtractContextProvider(ExtractContextProvider):
             self._extract_context = None
             self._output_language = self._detect_language()
         self._vision_messages_prepared = True
+
+    async def _ensure_person_directory(self):
+        if self._person_directory_loaded:
+            return
+        if self._ctx and self._viking_fs and any(
+            schema.memory_type == "people" for schema in self.get_memory_schemas(self._ctx)
+        ):
+            # The compact directory stays server-side; only relevant candidates enter
+            # the model context. A failed read is not permission to invent identities.
+            records = await load_active_people(self._viking_fs, self._ctx)
+            self._canonical_people = CanonicalPeople(records)
+        self._person_directory_loaded = True
+
+    def _person_source_text(self):
+        # Assistant repetitions and proposed identities are not independent evidence
+        # resolving an ambiguous name in the user's original words.
+        return "\n".join(
+            part.text
+            for message in self.messages or []
+            if getattr(message, "role", None) == "user"
+            for part in getattr(message, "parts", [])
+            if isinstance(part, TextPart) and part.text
+        )
+
+    def validate_canonical_people_operations(self, operations):
+        if self._ctx:
+            root = f"viking://user/{user_space_fragment(self._ctx)}/memories/"
+            self._canonical_people.validate(operations, root)
+        from openviking.session.memory.person_identity import validate_person_identity_patch
+
+        for operation in operations.upsert_operations:
+            if operation.memory_type == "people":
+                for uri in operation.uris:
+                    existing = self.read_file_contents.get(uri) or operation.old_memory_file_content
+                    validate_person_identity_patch(operation, existing)
+
+    def validate_operations(self, operations):
+        # Task-specific subclasses have their own stricter creation/attribution
+        # rules. Ordinary extraction can only extend an existing person page.
+        unambiguous = self._canonical_people.unambiguous(self._person_source_text())
+        for operation in operations.upsert_operations:
+            if operation.memory_type != "people":
+                continue
+            for uri in operation.uris:
+                if uri not in self.read_file_contents:
+                    raise ValueError("Ordinary extraction must fully read an existing person anchor")
+                existing = self.read_file_contents[uri]
+                if existing.extra_fields.get("contact_projection_deleted"):
+                    raise ValueError("Removed contact anchors are not active extraction targets")
+                if uri in self._canonical_people.records and uri not in unambiguous:
+                    raise ValueError(
+                        "This person's identity is not unambiguous in the source conversation; "
+                        "do not choose among same-name candidates or infer a different identity"
+                    )
+
+    async def _prefetch_people(self, messages):
+        await self._ensure_person_directory()
+        result = self._canonical_people.candidates(self._person_source_text())
+        if not result["people"]:
+            return
+        add_tool_call_pair_to_messages(
+            messages, "known-people", "search", {"query": "[Exact contact aliases]"}, result
+        )
+        for candidate in [p for p in result["people"] if not p["identityAmbiguous"]][
+            :MAX_PERSON_PREFETCH_READS
+        ]:
+            await self._append_structured_read_result(messages, len(messages), candidate["uri"])
+
+    def _default_memory_search_uris(self):
+        uris = []
+        for schema in self.get_memory_schemas(self._ctx):
+            if self._isolation_handler:
+                uris.extend(self._isolation_handler.render_schema_directories(schema))
+            elif self._ctx:
+                uris.append(render_template(
+                    schema.directory, {"user_space": user_space_fragment(self._ctx)}
+                ))
+        return sorted({uri for uri in uris if uri})
 
     def _get_vision_vlm(self):
         if self._vision_vlm is not None:
@@ -224,6 +312,7 @@ All memory content MUST be written in {output_language}.
 
 ## URI Handling
 The system automatically generates URIs based on memory_type and fields. Just provide correct memory_type and fields.
+Known contacts have application-owned people anchors. Match the supplied contact candidates against the original conversation, read their canonical people files and extend those same files with memory_type=people. Never create a duplicate entities person card for a known contact. Same-name candidates are alternatives, not identity confirmation; if original evidence cannot distinguish them, preserve the uncertainty without assigning person facts. Application-managed contact identity must be preserved. Use search and read for additional relevant memory when needed.
 {resource_uri_handling}
 
 ## Self and Peer Memory
@@ -493,6 +582,7 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
         # 先构建 Conversation History user message
         pre_fetch_messages = []
         pre_fetch_messages.append(self._build_conversation_message())
+        await self._prefetch_people(pre_fetch_messages)
 
         # 触发 registry 加载，过滤掉 agent_only 的 schema（trajectory/experience 由执行提取处理）
         schemas = [
@@ -507,7 +597,11 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
         ls_dirs = set()  # directories to ls (for multi-file schemas)
         read_files = set()  # files to read directly (for single-file schemas)
 
-        rolescope: RoleScope = self._isolation_handler.get_read_scope()
+        rolescope: RoleScope = (
+            self._isolation_handler.get_read_scope()
+            if self._isolation_handler
+            else RoleScope(user_ids=[user_space_fragment(self._ctx)] if self._ctx else [])
+        )
 
         for schema in schemas:
             if not schema.directory:
@@ -604,13 +698,25 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
         if not tool:
             return {"error": f"Unknown tool: {tool_call.name}"}
         tracer.info(f"tool_call.arguments={tool_call.arguments}")
-        result = await tool.execute(self.create_tool_context(), **tool_call.arguments)
-        return result
+        if tool_call.name == "search":
+            arguments = dict(tool_call.arguments)
+            arguments["limit"] = min(MAX_PERSON_CANDIDATES, max(1, int(arguments.get("limit", 10))))
+            result = await tool.execute(
+                self.create_tool_context(self._default_memory_search_uris()), **arguments
+            )
+            candidates = self._canonical_people.candidates(arguments.get("query", ""), arguments["limit"])
+            if candidates["people"]:
+                return {"contactCandidates": candidates, "memories": result}
+            return result
+        return await tool.execute(self.create_tool_context(), **tool_call.arguments)
 
     def get_tools(self) -> List[str]:
         """获取可用的工具列表"""
+        if self._canonical_people.records:
+            # Exact identity prefetch is bounded, so other relevant people must
+            # remain discoverable on demand even with eager semantic prefetch.
+            return ["read", "search"]
         if self._eager_prefetch:
-            # eager_prefetch 模式下不提供工具，所有内容已在 prefetch 中加载
             return []
         return ["read"]
 

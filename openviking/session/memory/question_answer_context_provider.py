@@ -11,7 +11,7 @@ from openviking.session.memory.tools import add_tool_call_pair_to_messages, get_
 def answer_registry(subject):
     registry = create_default_registry()
     registry.load_from_yaml(
-        str(Path(__file__).parents[2] / "prompts/templates/memory/email/people.yaml")
+        str(Path(__file__).parents[2] / "prompts/templates/memory/email/people.yaml"), replace=True
     )
     registry.get("people").filename_template = (
         (subject["id"] + ".md") if subject["kind"] == "person" else "person.md"
