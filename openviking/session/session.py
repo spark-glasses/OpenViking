@@ -944,7 +944,7 @@ class Session:
 
                 raise InvalidArgumentError(str(exc)) from exc
 
-            if self._is_tool_result_aggregate(role, parts):
+            if self._is_tool_result_aggregate(role, parts) and not spec.get("id"):
                 msgs = [
                     Message(
                         id=f"msg_{uuid4().hex}",
@@ -959,11 +959,12 @@ class Session:
                 all_messages.extend(msgs)
             else:
                 msg = Message(
-                    id=f"msg_{uuid4().hex}",
+                    id=spec.get("id") or f"msg_{uuid4().hex}",
                     role=role,
                     parts=parts,
                     peer_id=peer_id,
                     created_at=created_at,
+                    metadata=spec.get("metadata"),
                 )
                 self._externalize_large_tool_outputs(msg)
                 all_messages.append(msg)

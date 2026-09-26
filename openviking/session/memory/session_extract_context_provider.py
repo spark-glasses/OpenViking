@@ -407,7 +407,9 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
         def format_message_header(msg: Message, idx: int) -> str:
             """Format message header with role and stable interaction peer when present."""
             speaker = msg.peer_id or msg.role
-            return f"[{idx}][{msg.role}][{speaker}]: {format_message_with_parts(msg)}"
+            source = (getattr(msg, "metadata", None) or {}).get("sourceRef")
+            provenance = f"[sourceRef={source}]" if source else ""
+            return f"[{idx}][{msg.role}][{speaker}]{provenance}: {format_message_with_parts(msg)}"
 
         conversation_sections.append(
             "\n".join([format_message_header(msg, idx) for idx, msg in enumerate(messages)])

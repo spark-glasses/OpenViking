@@ -24,6 +24,7 @@ class Message:
     parts: List[Part]
     peer_id: Optional[str] = None
     created_at: str = None
+    metadata: Optional[dict] = None
 
     @property
     def content(self) -> str:
@@ -83,6 +84,8 @@ class Message:
         }
         if self.peer_id is not None:
             data["peer_id"] = self.peer_id
+        if self.metadata is not None:
+            data["metadata"] = self.metadata
         return data
 
     def _part_to_dict(self, part: Part) -> dict:
@@ -235,6 +238,7 @@ class Message:
             parts=parts,
             peer_id=peer_id,
             created_at=data.get("created_at"),
+            metadata=data.get("metadata"),
         )
 
     def get_tool_parts(self) -> List[ToolPart]:

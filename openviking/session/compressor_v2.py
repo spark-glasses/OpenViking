@@ -237,6 +237,9 @@ class SessionCompressorV2:
         meeting_context: Optional[Dict[str, Any]] = None,
         meeting_attempt_id: Optional[str] = None,
         question_context: Optional[Dict[str, Any]] = None,
+        memory_update_context: Optional[Dict[str, Any]] = None,
+        memory_update_before_apply: Optional[Callable] = None,
+        memory_update_after_apply: Optional[Callable] = None,
     ) -> List[Context]:
         """Extract long-term memories from messages using v2 templating system.
 
@@ -300,11 +303,20 @@ class SessionCompressorV2:
             registry = answer_registry(question_context["subject"])
             allowed_memory_types = {"people", "profile", "preferences", "entities", "events"}
             allowed_peer_ids = set()
+        if memory_update_context:
+            from openviking.session.memory.memory_update_context import UPDATE_MEMORY_TYPES
+            from openviking.session.memory.memory_update_context_provider import update_registry
+
+            registry = update_registry()
+            allowed_memory_types = set(UPDATE_MEMORY_TYPES)
+            allow_self_memory = True
+            allowed_peer_ids = set()
         if (
             allow_self_memory
             and not email_context
             and not meeting_context
             and not question_context
+            and not memory_update_context
         ):
             await registry.initialize_memory_files(
                 ctx,
@@ -328,7 +340,7 @@ class SessionCompressorV2:
         lock_manager = None
         transaction_handle = None
         if viking_fs and hasattr(viking_fs, "agfs") and viking_fs.agfs:
-            if email_context or meeting_context:
+            if email_context or meeting_context or memory_update_context:
                 try:
                     lock_manager = get_lock_manager()
                 except RuntimeError:
@@ -375,6 +387,18 @@ class SessionCompressorV2:
 
                 provider_class = QuestionAnswerContextProvider
                 provider_kwargs = {"question_context": question_context}
+            if memory_update_context:
+                from openviking.session.memory.memory_update_context_provider import (
+                    MemoryUpdateContextProvider,
+                )
+
+                provider_class = MemoryUpdateContextProvider
+                provider_kwargs = {
+                    "memory_update_context": memory_update_context,
+                    "archive_uri": archive_uri,
+                    "before_apply": memory_update_before_apply,
+                    "after_apply": memory_update_after_apply,
+                }
             context_provider = provider_class(
                 messages=messages,
                 latest_archive_overview=latest_archive_overview,
@@ -509,7 +533,7 @@ class SessionCompressorV2:
                 # Email jobs must remain bounded even while waiting for another writer.
                 lock_deadline = (
                     asyncio.get_running_loop().time() + 45
-                    if email_context or meeting_context
+                    if email_context or meeting_context or memory_update_context
                     else None
                 )
                 # 循环重试获取锁（机制确保不会死锁）
@@ -565,6 +589,13 @@ class SessionCompressorV2:
                 if operations is not None:
                     context_provider.validate_operations(operations)
                 await context_provider.before_apply(operations)
+            elif memory_update_context:
+                orchestrator.max_iterations = 16
+                operations, tools_used = await asyncio.wait_for(orchestrator.run(), timeout=300)
+                if operations is None:
+                    raise RuntimeError("Memory update did not produce a valid operation result")
+                context_provider.validate_operations(operations)
+                await context_provider.before_apply(operations)
             else:
                 operations, tools_used = await orchestrator.run()
                 if question_context and operations is not None:
@@ -576,7 +607,7 @@ class SessionCompressorV2:
             else:
                 updater = self._get_or_create_updater(registry, transaction_handle)
                 updater.strict_merge_errors = bool(
-                    email_context or meeting_context or question_context
+                    email_context or meeting_context or question_context or memory_update_context
                 )
 
                 # Apply operations with isolation_handler
@@ -718,6 +749,9 @@ class SessionCompressorV2:
                 await context_provider.persist_record("meeting_result.json", meeting_result)
                 if errors:
                     raise RuntimeError("Meeting memory updates failed: " + "; ".join(errors))
+
+            if memory_update_context:
+                await context_provider.after_apply(result, memory_diff)
 
             # Report telemetry stats.
             telemetry = get_current_telemetry()

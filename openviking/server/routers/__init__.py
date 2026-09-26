@@ -9,6 +9,7 @@ from openviking.server.routers.console import router as console_router
 from openviking.server.routers.content import router as content_router
 from openviking.server.routers.debug import router as debug_router
 from openviking.server.routers.filesystem import router as filesystem_router
+from openviking.server.routers.memory_updates import router as memory_updates_router
 from openviking.server.routers.metrics import router as metrics_router
 from openviking.server.routers.observer import router as observer_router
 from openviking.server.routers.pack import router as pack_router
@@ -49,6 +50,7 @@ __all__ = [
     "questions_router",
     "debug_router",
     "metrics_router",
+    "memory_updates_router",
     "observer_router",
     "tasks_router",
     "user_settings_router",

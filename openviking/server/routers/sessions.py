@@ -85,6 +85,8 @@ class AddMessageRequest(BaseModel):
     If both are provided, `parts` takes precedence.
     """
 
+    id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    metadata: Optional[Dict[str, Any]] = None
     role: str
     peer_id: Optional[str] = None
     agent_id: Optional[str] = None
@@ -93,6 +95,15 @@ class AddMessageRequest(BaseModel):
     parts: Optional[List[Dict[str, Any]]] = None
     created_at: Optional[str] = None
     telemetry: TelemetryRequest = False
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value):
+        import json
+
+        if value is not None and len(json.dumps(value, ensure_ascii=False)) > 50000:
+            raise ValueError("Message metadata exceeds 50000 characters")
+        return value
 
     @field_validator("peer_id")
     @classmethod
@@ -463,6 +474,96 @@ async def extract_session(
     return Response(status="ok", result=_to_jsonable(result))
 
 
+async def _add_identified_message(service, session_id, request, ctx):
+    import hashlib
+    import json
+
+    from openviking.core.namespace import canonical_session_uri
+    from openviking.storage.transaction import LockContext, get_lock_manager
+    from openviking_cli.exceptions import NotFoundError
+
+    fs = service.viking_fs
+    uri = canonical_session_uri(ctx, session_id)
+    source_payload = request.model_dump(exclude={"telemetry", "metadata"}, exclude_none=True)
+    if request.metadata and request.metadata.get("sourceRef"):
+        source_payload["sourceRef"] = request.metadata["sourceRef"]
+    digest = hashlib.sha256(
+        json.dumps(source_payload, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
+    receipt_id = hashlib.sha256(request.id.encode()).hexdigest()
+    receipt_uri = uri + "/message_receipts/" + receipt_id + ".json"
+    async with LockContext(get_lock_manager(), [fs._uri_to_path(uri, ctx)], lock_mode="exact"):
+        session = await service.sessions.get(session_id, ctx, auto_create=True)
+        try:
+            receipt = json.loads(await fs.read_file(receipt_uri, ctx=ctx))
+        except NotFoundError:
+            receipt = None
+        if receipt:
+            if receipt["inputHash"] != digest:
+                raise HTTPException(
+                    status_code=409, detail="Message ID already belongs to different content"
+                )
+            return {
+                "session_id": session_id,
+                "message_count": len(session.messages),
+                "duplicate": True,
+            }
+        # Recover a crash after JSONL append but before writing the receipt.
+        existing = next((m for m in session.messages if m.id == request.id), None)
+        if existing is None:
+            try:
+                archives = await fs.ls(uri + "/history", ctx=ctx)
+            except NotFoundError:
+                archives = []
+            for archive in archives:
+                name = archive.get("name", "")
+                if not name.startswith("archive_"):
+                    continue
+                try:
+                    raw = await fs.read_file(uri + "/history/" + name + "/messages.jsonl", ctx=ctx)
+                except NotFoundError:
+                    continue
+                from openviking.message import Message
+
+                existing = next(
+                    (
+                        Message.from_dict(value)
+                        for line in raw.splitlines()
+                        if line.strip()
+                        for value in [json.loads(line)]
+                        if value.get("id") == request.id
+                    ),
+                    None,
+                )
+                if existing:
+                    break
+        if existing and (existing.metadata or {}).get("ingestionHash") != digest:
+            raise HTTPException(
+                status_code=409, detail="Message ID already belongs to different content"
+            )
+        if existing is None:
+            session.add_messages(
+                [
+                    {
+                        "id": request.id,
+                        "role": request.role,
+                        "parts": _resolve_message_parts(request),
+                        "peer_id": _resolve_message_peer_id(request, ctx),
+                        "created_at": request.created_at,
+                        "metadata": {**(request.metadata or {}), "ingestionHash": digest},
+                    }
+                ]
+            )
+        await fs.write_file(
+            receipt_uri, json.dumps({"messageId": request.id, "inputHash": digest}), ctx=ctx
+        )
+        return {
+            "session_id": session_id,
+            "message_count": len(session.messages),
+            "duplicate": existing is not None,
+        }
+
+
 @router.post("/{session_id}/messages")
 async def add_message(
     request: AddMessageRequest,
@@ -487,23 +588,21 @@ async def add_message(
     service = get_service()
 
     async def _add() -> dict[str, Any]:
+        if request.id:
+            return await _add_identified_message(service, session_id, request, _ctx)
         session = await service.sessions.get(session_id, _ctx, auto_create=True)
-        parts = _resolve_message_parts(request)
-
         session.add_messages(
             [
                 {
                     "role": request.role,
-                    "parts": parts,
+                    "parts": _resolve_message_parts(request),
                     "peer_id": _resolve_message_peer_id(request, _ctx),
                     "created_at": request.created_at,
+                    "metadata": request.metadata,
                 }
             ]
         )
-        return {
-            "session_id": session_id,
-            "message_count": len(session.messages),
-        }
+        return {"session_id": session_id, "message_count": len(session.messages)}
 
     execution = await run_operation(
         operation="session.add_message",
@@ -527,6 +626,20 @@ async def batch_add_messages(
     service = get_service()
 
     async def _batch_add() -> dict[str, Any]:
+        if any(message.id for message in request.messages):
+            if not all(message.id for message in request.messages):
+                raise HTTPException(
+                    status_code=400, detail="Identified batches require IDs for every message"
+                )
+            results = [
+                await _add_identified_message(service, session_id, message, _ctx)
+                for message in request.messages
+            ]
+            return {
+                "session_id": session_id,
+                "message_count": results[-1]["message_count"] if results else 0,
+                "added": sum(not r.get("duplicate", False) for r in results),
+            }
         session = await service.sessions.get(session_id, _ctx, auto_create=True)
         specs = []
         for msg_request in request.messages:
@@ -537,6 +650,7 @@ async def batch_add_messages(
                     "parts": parts,
                     "peer_id": _resolve_message_peer_id(msg_request, _ctx),
                     "created_at": msg_request.created_at,
+                    "metadata": msg_request.metadata,
                 }
             )
         msgs = session.add_messages(specs)

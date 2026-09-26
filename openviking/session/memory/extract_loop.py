@@ -649,6 +649,9 @@ The final output of the model must strictly follow the JSON Schema format shown 
         if not self._disable_tools_for_iteration and self._tool_schemas:
             tools = self._tool_schemas
             tool_choice = "auto"
+        validate_model_input = getattr(self.context_provider, "validate_model_input", None)
+        if validate_model_input is not None:
+            validate_model_input(messages, tools)
         with bind_telemetry_stage("memory_extract"):
             response = await self.vlm.get_completion_async(
                 messages=messages,

@@ -86,6 +86,39 @@ class MemoryConfig(BaseModel):
         ),
     )
 
+    memory_update_max_input_tokens: int = Field(
+        default=65536,
+        ge=1024,
+        le=2000000,
+        description=(
+            "Estimated input-token budget for explicit contextual updates, including "
+            "assembled messages and tool schemas. Configure below the deployed model's "
+            "context window after reserving output capacity and safety margin. This "
+            "does not detect a model window or change the VLM output-token limit."
+        ),
+    )
+    memory_update_max_source_chars: int = Field(
+        default=240000,
+        ge=1000,
+        le=8000000,
+        description="Maximum newly read source/context characters per explicit memory update",
+    )
+    memory_update_max_tool_calls: int = Field(
+        default=24,
+        ge=1,
+        le=100,
+        description="Maximum tool calls per explicit contextual memory update",
+    )
+
+    source_base_url: str = Field(
+        default="", description="Trusted original-source bridge; defaults to email_source_base_url"
+    )
+    source_api_key: str = Field(
+        default="",
+        repr=False,
+        description="Original-source bridge credential; defaults to email_source_api_key",
+    )
+
     email_source_base_url: str = Field(
         default="", description="Trusted Spark email read bridge URL; not model-controlled"
     )
