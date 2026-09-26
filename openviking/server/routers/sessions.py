@@ -17,6 +17,7 @@ from openviking.server.models import ErrorInfo, Response
 from openviking.server.responses import error_response
 from openviking.server.telemetry import run_operation
 from openviking.session.memory.email_context import EmailContext
+from openviking.session.memory.meeting_context import MeetingContext
 from openviking.telemetry import TelemetryRequest
 from openviking_cli.utils import get_logger
 
@@ -125,7 +126,14 @@ class CreateSessionRequest(BaseModel):
     session_id: Optional[str] = None
     memory_policy: Optional[Dict[str, Any]] = None
     email_context: Optional[EmailContext] = None
+    meeting_context: Optional[MeetingContext] = None
     telemetry: TelemetryRequest = False
+
+    @model_validator(mode="after")
+    def validate_context_kind(self):
+        if self.email_context is not None and self.meeting_context is not None:
+            raise ValueError("Email and meeting contexts are mutually exclusive")
+        return self
 
 
 def _resolve_message_parts(msg_request: AddMessageRequest) -> List[Part]:
@@ -208,6 +216,9 @@ async def create_session(
             request.session_id,
             memory_policy=request.memory_policy,
             email_context=request.email_context.model_dump() if request.email_context else None,
+            meeting_context=request.meeting_context.model_dump()
+            if request.meeting_context
+            else None,
         )
         return {
             "session_id": session.session_id,
@@ -366,6 +377,17 @@ async def retry_email_archive(
     """Retry a failed frozen email batch; never rebuild input from live session metadata."""
     session = await get_service().sessions.get(session_id, _ctx, auto_create=False)
     return Response(status="ok", result=await session.retry_email_archive(archive_id))
+
+
+@router.post("/{session_id}/archives/{archive_id}/retry-meeting")
+async def retry_meeting_archive(
+    session_id: str,
+    archive_id: str,
+    _ctx: RequestContext = Depends(get_request_context),
+):
+    """Retry a failed frozen meeting batch; never rebuild input from live session metadata."""
+    session = await get_service().sessions.get(session_id, _ctx, auto_create=False)
+    return Response(status="ok", result=await session.retry_meeting_archive(archive_id))
 
 
 @router.delete("/{session_id}")

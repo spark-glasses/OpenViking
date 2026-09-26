@@ -234,6 +234,8 @@ class SessionCompressorV2:
         allowed_peer_ids: Optional[set[str]] = None,
         email_context: Optional[Dict[str, Any]] = None,
         email_attempt_id: Optional[str] = None,
+        meeting_context: Optional[Dict[str, Any]] = None,
+        meeting_attempt_id: Optional[str] = None,
         question_context: Optional[Dict[str, Any]] = None,
     ) -> List[Context]:
         """Extract long-term memories from messages using v2 templating system.
@@ -279,13 +281,31 @@ class SessionCompressorV2:
             allowed_memory_types = set(EMAIL_MEMORY_TYPES)
             allow_self_memory = True
             allowed_peer_ids = set()
-        if question_context:
+        if meeting_context:
+            from openviking.session.memory.meeting_context import (
+                MEETING_MEMORY_TYPES,
+                MeetingContext,
+            )
+            from openviking.session.memory.meeting_context_provider import create_meeting_registry
+
+            spec = MeetingContext.model_validate(meeting_context)
+            spec.validate_owner(ctx)
+            registry = create_meeting_registry(spec)
+            allowed_memory_types = set(MEETING_MEMORY_TYPES)
+            allow_self_memory = True
+            allowed_peer_ids = set()
+        if question_context and not meeting_context:
             from openviking.session.memory.question_answer_context_provider import answer_registry
 
             registry = answer_registry(question_context["subject"])
             allowed_memory_types = {"people", "profile", "preferences", "entities", "events"}
             allowed_peer_ids = set()
-        if allow_self_memory and not email_context and not question_context:
+        if (
+            allow_self_memory
+            and not email_context
+            and not meeting_context
+            and not question_context
+        ):
             await registry.initialize_memory_files(
                 ctx,
                 allowed_memory_types=allowed_memory_types,
@@ -308,7 +328,7 @@ class SessionCompressorV2:
         lock_manager = None
         transaction_handle = None
         if viking_fs and hasattr(viking_fs, "agfs") and viking_fs.agfs:
-            if email_context:
+            if email_context or meeting_context:
                 try:
                     lock_manager = get_lock_manager()
                 except RuntimeError:
@@ -337,7 +357,18 @@ class SessionCompressorV2:
                     "archive_uri": archive_uri,
                     "attempt_id": email_attempt_id,
                 }
-            if question_context:
+            if meeting_context:
+                from openviking.session.memory.meeting_context_provider import (
+                    MeetingContextProvider,
+                )
+
+                provider_class = MeetingContextProvider
+                provider_kwargs = {
+                    "meeting_context": meeting_context,
+                    "archive_uri": archive_uri,
+                    "attempt_id": meeting_attempt_id,
+                }
+            if question_context and not meeting_context:
                 from openviking.session.memory.question_answer_context_provider import (
                     QuestionAnswerContextProvider,
                 )
@@ -390,6 +421,51 @@ class SessionCompressorV2:
                             and not is_question_uri(uri, ctx)
                         ):
                             raise ValueError("Recovery target is a different person")
+            if meeting_context and archive_uri:
+                from openviking_cli.exceptions import NotFoundError
+
+                try:
+                    previous = json.loads(
+                        await viking_fs.read_file(f"{archive_uri}/meeting_result.json", ctx=ctx)
+                    )
+                except NotFoundError:
+                    previous = {}
+                if previous and (
+                    not isinstance(previous, dict)
+                    or previous.get("jobId") != meeting_context["jobId"]
+                    or previous.get("chunkIndex") != meeting_context.get("chunkIndex")
+                    or (
+                        meeting_context.get("chunkIndex") is not None
+                        and type(previous.get("chunkIndex")) is not int
+                    )
+                ):
+                    raise RuntimeError(
+                        "Frozen meeting archive result belongs to another job or chunk"
+                    )
+                if (
+                    previous.get("jobId") == meeting_context["jobId"]
+                    and previous.get("outcome") == "failed"
+                ):
+                    recovery_uris = list(
+                        dict.fromkeys(
+                            previous.get("writtenUris", [])
+                            + previous.get("editedUris", [])
+                            + previous.get("reindexedUris", [])
+                        )
+                    )
+                    if len(recovery_uris) > 100:
+                        raise ValueError("Too many meeting recovery targets")
+                    from openviking.session.memory.question_store import is_question_uri
+
+                    for uri in recovery_uris:
+                        context_provider._check_uri(uri)
+                        relative = uri[len(context_provider.root_uri) :]
+                        if relative.split("/", 1)[0] not in {
+                            "people",
+                            "entities",
+                            "events",
+                        } and not is_question_uri(uri, ctx):
+                            raise ValueError("Recovery target outside meeting memory scope")
             await context_provider.prepare_extraction_messages()
             extract_context = context_provider.get_extract_context()
             isolation_handler = MemoryIsolationHandler(
@@ -431,7 +507,11 @@ class SessionCompressorV2:
                 last_lock_retry_warning_at = 0.0
 
                 # Email jobs must remain bounded even while waiting for another writer.
-                lock_deadline = asyncio.get_running_loop().time() + 45 if email_context else None
+                lock_deadline = (
+                    asyncio.get_running_loop().time() + 45
+                    if email_context or meeting_context
+                    else None
+                )
                 # 循环重试获取锁（机制确保不会死锁）
                 while True:
                     acquire = lock_manager.acquire_exact_tree_batch(
@@ -479,6 +559,12 @@ class SessionCompressorV2:
                             "searchEmails",
                             {"contactId": email_context["contactId"], "maxResults": 1},
                         )
+            elif meeting_context:
+                orchestrator.max_iterations = 16
+                operations, tools_used = await asyncio.wait_for(orchestrator.run(), timeout=300)
+                if operations is not None:
+                    context_provider.validate_operations(operations)
+                await context_provider.before_apply(operations)
             else:
                 operations, tools_used = await orchestrator.run()
                 if question_context and operations is not None:
@@ -489,7 +575,9 @@ class SessionCompressorV2:
                 result = MemoryUpdateResult()
             else:
                 updater = self._get_or_create_updater(registry, transaction_handle)
-                updater.strict_merge_errors = bool(email_context or question_context)
+                updater.strict_merge_errors = bool(
+                    email_context or meeting_context or question_context
+                )
 
                 # Apply operations with isolation_handler
                 result = await updater.apply_operations(
@@ -505,7 +593,7 @@ class SessionCompressorV2:
                     f"errors={len(result.errors)}"
                 )
 
-            if email_context and recovery_uris:
+            if (email_context or meeting_context) and recovery_uris:
                 # A previous attempt may have written files and then failed indexing/summary.
                 # Reindex those files even if this reasoning pass correctly emits no new edits.
                 retry_index_result = MemoryUpdateResult()
@@ -547,7 +635,7 @@ class SessionCompressorV2:
                     ctx=ctx,
                 )
                 logger.info(f"Wrote memory_diff.json to {archive_uri}")
-                if email_context:
+                if email_context or meeting_context:
                     await context_provider.persist_record("memory_diff.json", memory_diff)
 
             if email_context:
@@ -585,6 +673,51 @@ class SessionCompressorV2:
                 await context_provider.persist_record("email_result.json", email_result)
                 if errors:
                     raise RuntimeError("Email memory updates failed: " + "; ".join(errors))
+
+            if meeting_context:
+                errors = [f"{uri}: {error}" for uri, error in result.errors]
+                changed = (
+                    any(
+                        memory_diff.get("operations", {}).get(kind)
+                        for kind in ("adds", "updates", "deletes")
+                    )
+                    if archive_uri and viking_fs
+                    else result.has_changes()
+                )
+                meeting_result = {
+                    "jobId": meeting_context["jobId"],
+                    **(
+                        {"chunkIndex": meeting_context["chunkIndex"]}
+                        if meeting_context.get("chunkIndex") is not None
+                        else {}
+                    ),
+                    "meetingId": meeting_context["meetingId"],
+                    "inputHash": meeting_context["inputHash"],
+                    "taskId": meeting_attempt_id,
+                    "outcome": "failed"
+                    if errors
+                    else "applied"
+                    if changed or recovery_uris
+                    else "no_change",
+                    "partial": context_provider.partial or bool(errors and result.has_changes()),
+                    "writtenUris": result.written_uris,
+                    "editedUris": result.edited_uris,
+                    "reindexedUris": recovery_uris,
+                    "sourceRefs": sorted(context_provider._source_refs),
+                    "coverage": context_provider.coverage(),
+                    "speakerAssignments": context_provider.assignments
+                    + context_provider._confirmed,
+                    "questionRefs": await context_provider.read_updated_questions(
+                        result, recovery_uris
+                    )
+                    if not errors
+                    else [],
+                    "errors": errors,
+                }
+                await context_provider.persist_evidence()
+                await context_provider.persist_record("meeting_result.json", meeting_result)
+                if errors:
+                    raise RuntimeError("Meeting memory updates failed: " + "; ".join(errors))
 
             # Report telemetry stats.
             telemetry = get_current_telemetry()
@@ -647,6 +780,31 @@ class SessionCompressorV2:
                 }
                 await context_provider.persist_evidence()
                 await context_provider.persist_record("email_result.json", failed)
+            if meeting_context and "context_provider" in locals():
+                failed = {
+                    "jobId": meeting_context["jobId"],
+                    **(
+                        {"chunkIndex": meeting_context["chunkIndex"]}
+                        if meeting_context.get("chunkIndex") is not None
+                        else {}
+                    ),
+                    "meetingId": meeting_context["meetingId"],
+                    "inputHash": meeting_context["inputHash"],
+                    "taskId": meeting_attempt_id,
+                    "outcome": "failed",
+                    "partial": True,
+                    "writtenUris": result.written_uris if "result" in locals() else [],
+                    "editedUris": result.edited_uris if "result" in locals() else [],
+                    "reindexedUris": recovery_uris,
+                    "sourceRefs": sorted(context_provider._source_refs),
+                    "coverage": context_provider.coverage(),
+                    "speakerAssignments": context_provider.assignments
+                    + context_provider._confirmed,
+                    "questionRefs": [],
+                    "errors": [str(e)],
+                }
+                await context_provider.persist_evidence()
+                await context_provider.persist_record("meeting_result.json", failed)
             logger.error(f"Failed to extract memories with v2: {e}", exc_info=True)
             if strict_extract_errors:
                 raise

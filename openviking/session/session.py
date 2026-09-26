@@ -272,6 +272,7 @@ class SessionMeta:
     keep_recent_count: int = 0
     memory_policy: Optional[Dict[str, Any]] = None
     email_context: Optional[Dict[str, Any]] = None
+    meeting_context: Optional[Dict[str, Any]] = None
     question_context: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -291,6 +292,9 @@ class SessionMeta:
             "keep_recent_count": self.keep_recent_count,
             "memory_policy": dict(self.memory_policy) if self.memory_policy is not None else None,
             "email_context": dict(self.email_context) if self.email_context is not None else None,
+            "meeting_context": dict(self.meeting_context)
+            if self.meeting_context is not None
+            else None,
             "question_context": dict(self.question_context)
             if self.question_context is not None
             else None,
@@ -338,6 +342,7 @@ class SessionMeta:
             keep_recent_count=max(0, int(data.get("keep_recent_count", 0) or 0)),
             memory_policy=data.get("memory_policy"),
             email_context=data.get("email_context"),
+            meeting_context=data.get("meeting_context"),
             question_context=data.get("question_context"),
         )
 
@@ -1110,6 +1115,9 @@ class Session:
         keep_recent_count = max(0, int(keep_recent_count or 0))
         effective_policy = MemoryPolicy.from_dict(self._meta.memory_policy)
         effective_email_context = None
+        effective_meeting_context = None
+        if self._meta.email_context is not None and self._meta.meeting_context is not None:
+            raise ValueError("Email and meeting contexts are mutually exclusive")
         if self._meta.email_context is not None:
             from openviking.session.memory.email_context import (
                 EMAIL_MEMORY_TYPES,
@@ -1122,6 +1130,18 @@ class Session:
             effective_email_context = spec.model_dump()
             effective_policy = MemoryPolicy.from_dict(email_memory_policy())
             effective_policy.validate_memory_types(set(EMAIL_MEMORY_TYPES))
+        elif self._meta.meeting_context is not None:
+            from openviking.session.memory.meeting_context import (
+                MEETING_MEMORY_TYPES,
+                MeetingContext,
+                meeting_memory_policy,
+            )
+
+            spec = MeetingContext.model_validate(self._meta.meeting_context)
+            spec.validate_owner(self.ctx)
+            effective_meeting_context = spec.model_dump()
+            effective_policy = MemoryPolicy.from_dict(meeting_memory_policy())
+            effective_policy.validate_memory_types(set(MEETING_MEMORY_TYPES))
         else:
             _validate_memory_policy_types(effective_policy)
         effective_memory_policy = effective_policy.to_dict()
@@ -1206,6 +1226,12 @@ class Session:
                         content=json.dumps(effective_email_context),
                         ctx=self.ctx,
                     )
+                if effective_meeting_context is not None:
+                    await self._viking_fs.write_file(
+                        uri=f"{archive_uri}/meeting_context.json",
+                        content=json.dumps(effective_meeting_context),
+                        ctx=self.ctx,
+                    )
                 # Persist archive raw messages before trimming live messages so
                 # an archive write failure cannot drop live conversation history.
                 if self._viking_fs:
@@ -1247,7 +1273,7 @@ class Session:
 
         # Create TaskRecord for tracking Phase 2
         tracker = get_task_tracker()
-        if effective_email_context is not None:
+        if effective_email_context is not None or effective_meeting_context is not None:
             # A lost phase-1 response can be recovered from the frozen archive.
             # Do not start a second loop if recovery beat this original request.
             task = await tracker.create_if_no_running(
@@ -1266,7 +1292,8 @@ class Session:
                     limit=1,
                 )
                 if not tasks:
-                    raise RuntimeError("Email archive task reconciliation failed")
+                    kind = "Meeting" if effective_meeting_context is not None else "Email"
+                    raise RuntimeError(f"{kind} archive task reconciliation failed")
                 return {
                     "session_id": self.session_id,
                     "status": "accepted",
@@ -1293,6 +1320,7 @@ class Session:
                 last_message_id=messages_to_archive[-1].id if messages_to_archive else "",
                 memory_policy=effective_memory_policy,
                 email_context=effective_email_context,
+                meeting_context=effective_meeting_context,
             )
         )
 
@@ -1316,6 +1344,7 @@ class Session:
         last_message_id: str,
         memory_policy: Optional[Dict[str, Any]],
         email_context: Optional[Dict[str, Any]] = None,
+        meeting_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Phase 2: Extract memories, write relations, enqueue — runs in background."""
         import uuid
@@ -1340,7 +1369,7 @@ class Session:
         redo_log = lock_manager.redo_log
 
         try:
-            if email_context:
+            if email_context or meeting_context:
                 await asyncio.wait_for(
                     self._wait_for_previous_archive_done(archive_index), timeout=60
                 )
@@ -1356,6 +1385,12 @@ class Session:
             register_telemetry(telemetry)
             try:
                 with bind_telemetry(telemetry):
+                    if meeting_context:
+                        await self._viking_fs.write_file(
+                            f"{archive_uri}/attempts/{task_id}/meeting_context.json",
+                            json.dumps(meeting_context),
+                            ctx=self.ctx,
+                        )
                     # redo-log protection
                     if redo_enabled:
                         redo_task_id = str(uuid.uuid4())
@@ -1368,6 +1403,7 @@ class Session:
                                 "user_id": self.ctx.user.user_id,
                                 "role": str(self.ctx.role),
                                 "email_context": email_context,
+                                "meeting_context": meeting_context,
                                 "memory_policy": memory_policy,
                                 "task_id": task_id,
                             },
@@ -1511,6 +1547,14 @@ class Session:
                                         if email_context
                                         else {}
                                     ),
+                                    **(
+                                        {
+                                            "meeting_context": meeting_context,
+                                            "meeting_attempt_id": task_id,
+                                        }
+                                        if meeting_context
+                                        else {}
+                                    ),
                                 )
 
                             extraction_tasks.append(
@@ -1644,7 +1688,7 @@ class Session:
                         timeout=_PHASE2_QUEUE_WAIT_TIMEOUT_SECONDS,
                     )
                 except TimeoutError as exc:
-                    if email_context:
+                    if email_context or meeting_context:
                         raise
                     telemetry.set_error(
                         "session.commit.phase2.wait_for_request",
@@ -1657,10 +1701,11 @@ class Session:
                         telemetry.telemetry_id,
                         _PHASE2_QUEUE_WAIT_TIMEOUT_SECONDS,
                     )
-                if email_context:
+                if email_context or meeting_context:
                     queues = request_wait_tracker.build_queue_status(telemetry.telemetry_id)
                     if any(queue.get("error_count", 0) for queue in queues.values()):
-                        raise RuntimeError("Email memory indexing failed: " + json.dumps(queues))
+                        kind = "Meeting" if meeting_context else "Email"
+                        raise RuntimeError(f"{kind} memory indexing failed: " + json.dumps(queues))
             finally:
                 request_wait_tracker.cleanup(telemetry.telemetry_id)
                 unregister_telemetry(telemetry.telemetry_id)
@@ -1708,6 +1753,32 @@ class Session:
                 result_payload["email_result"] = email_result
                 result_payload["email_result_uri"] = email_result_uri
                 result_payload["email_evidence_uri"] = f"{archive_uri}/email_evidence.json"
+            if meeting_context:
+                meeting_result_uri = f"{archive_uri}/meeting_result.json"
+                meeting_result = json.loads(
+                    await self._viking_fs.read_file(meeting_result_uri, ctx=self.ctx)
+                )
+                if (
+                    not isinstance(meeting_result, dict)
+                    or meeting_result.get("jobId") != meeting_context["jobId"]
+                    or meeting_result.get("taskId") != task_id
+                    or meeting_result.get("chunkIndex") != meeting_context.get("chunkIndex")
+                    or (
+                        meeting_context.get("chunkIndex") is not None
+                        and type(meeting_result.get("chunkIndex")) is not int
+                    )
+                    or meeting_result.get("outcome") not in ("applied", "no_change")
+                    or meeting_result.get("errors")
+                ):
+                    raise RuntimeError(
+                        "Meeting extraction did not produce a successful result for this attempt"
+                    )
+                result_payload["meeting_result"] = meeting_result
+                result_payload["meeting_result_uri"] = meeting_result_uri
+                result_payload["meeting_evidence_uri"] = f"{archive_uri}/meeting_evidence.json"
+                result_payload["speaker_assignments_uri"] = (
+                    f"{archive_uri}/speaker_assignments.json"
+                )
 
             await self._write_done_file(archive_uri, first_message_id, last_message_id)
             await tracker.complete(
@@ -1721,6 +1792,10 @@ class Session:
             if email_context:
                 await self._record_email_phase_failure(
                     archive_uri, task_id, email_context, f"cancelled: {e}"
+                )
+            if meeting_context:
+                await self._record_meeting_phase_failure(
+                    archive_uri, task_id, meeting_context, f"cancelled: {e}"
                 )
             if redo_enabled and redo_task_id:
                 await redo_log.mark_done_async(redo_task_id)
@@ -1743,6 +1818,10 @@ class Session:
         except Exception as e:
             if email_context:
                 await self._record_email_phase_failure(archive_uri, task_id, email_context, str(e))
+            if meeting_context:
+                await self._record_meeting_phase_failure(
+                    archive_uri, task_id, meeting_context, str(e)
+                )
             if redo_enabled and redo_task_id:
                 await redo_log.mark_done_async(redo_task_id)
             await self._write_failed_marker(
@@ -1872,6 +1951,177 @@ class Session:
                 last_message_id=messages[-1].id,
                 memory_policy=email_memory_policy(),
                 email_context=spec.model_dump(),
+            )
+        )
+        return {
+            "session_id": self.session_id,
+            "archive_uri": archive_uri,
+            "status": "accepted",
+            "task_id": task.task_id,
+        }
+
+    async def _record_meeting_phase_failure(self, archive_uri, task_id, meeting_context, error):
+        """Do not leave an applied result behind when summary/indexing or task finalization failed."""
+        if not self._viking_fs:
+            return
+        # Task-store finalization can fail after the done marker was written.
+        # A stale marker must not turn a failed extraction into a completed retry.
+        try:
+            await self._viking_fs.rm(f"{archive_uri}/.done", ctx=self.ctx)
+        except Exception:
+            logger.debug("Could not remove meeting done marker for %s", archive_uri)
+        result = {}
+        try:
+            result = json.loads(
+                await self._viking_fs.read_file(f"{archive_uri}/meeting_result.json", ctx=self.ctx)
+            )
+        except Exception:
+            pass
+        if not isinstance(result, dict):
+            result = {}
+        expected_chunk = meeting_context.get("chunkIndex")
+        if result and (
+            result.get("chunkIndex") != expected_chunk
+            or (expected_chunk is not None and type(result.get("chunkIndex")) is not int)
+        ):
+            # Retain the foreign artifact for diagnostics, without making its writes
+            # or coverage eligible for recovery under this chunk's identity.
+            result = {
+                "previousResult": result,
+                "writtenUris": [],
+                "editedUris": [],
+                "reindexedUris": [],
+                "sourceRefs": [],
+                "speakerAssignments": [],
+                "partial": True,
+                "coverage": {
+                    "sourceRef": meeting_context["sourceRef"],
+                    "sourceVersion": meeting_context["sourceVersion"],
+                    "scope": "chunk" if expected_chunk is not None else "recording",
+                    **({"chunkIndex": expected_chunk} if expected_chunk is not None else {}),
+                    "requestedWindows": [
+                        {"startMs": window["startMs"], "endMs": window["endMs"]}
+                        for window in meeting_context["mediaWindows"]
+                    ],
+                    "readTokenRanges": [],
+                    "pages": [],
+                    "hasMore": True,
+                    "nextCursor": None,
+                },
+                "errors": ["Previous meeting result belongs to a different chunk"],
+            }
+        if meeting_context.get("chunkIndex") is None:
+            result.pop("chunkIndex", None)
+        else:
+            result["chunkIndex"] = meeting_context["chunkIndex"]
+        previous_errors = result.get("errors", [])
+        if not isinstance(previous_errors, list):
+            previous_errors = []
+        result.update(
+            {
+                "jobId": meeting_context["jobId"],
+                "meetingId": meeting_context["meetingId"],
+                "taskId": task_id,
+                "outcome": "failed",
+                "partial": bool(
+                    result.get("partial") or result.get("writtenUris") or result.get("editedUris")
+                ),
+                "writtenUris": result.get("writtenUris", []),
+                "editedUris": result.get("editedUris", []),
+                "questionRefs": [],
+                "errors": list(dict.fromkeys([*[str(value) for value in previous_errors], error])),
+            }
+        )
+        try:
+            content = json.dumps(result, ensure_ascii=False)
+            await self._viking_fs.write_file(
+                f"{archive_uri}/attempts/{task_id}/meeting_result.json", content, ctx=self.ctx
+            )
+            await self._viking_fs.write_file(
+                f"{archive_uri}/meeting_result.json", content, ctx=self.ctx
+            )
+        except Exception:
+            logger.exception(
+                "Could not persist failed meeting result for session %s", self.session_id
+            )
+
+    async def retry_meeting_archive(self, archive_id: str) -> Dict[str, Any]:
+        """Resume a failed meeting archive without appending or archiving messages again."""
+        from openviking.service.task_tracker import get_task_tracker
+        from openviking.session.memory.meeting_context import MeetingContext, meeting_memory_policy
+        from openviking_cli.exceptions import InvalidArgumentError, NotFoundError
+
+        if not re.fullmatch(r"archive_[0-9]+", archive_id):
+            raise InvalidArgumentError("Invalid archive ID")
+        archive_uri = f"{self._session_uri}/history/{archive_id}"
+        raw_spec = await self._viking_fs.read_file(
+            f"{archive_uri}/meeting_context.json", ctx=self.ctx
+        )
+        spec = MeetingContext.model_validate(json.loads(raw_spec))
+        spec.validate_owner(self.ctx)
+        tracker = get_task_tracker()
+        try:
+            await self._viking_fs.read_file(f"{archive_uri}/.done", ctx=self.ctx)
+        except NotFoundError:
+            pass
+        else:
+            tasks = await tracker.list_tasks(
+                task_type="session_commit",
+                resource_id=self.session_id,
+                account_id=self.ctx.account_id,
+                user_id=self.ctx.user.user_id,
+                limit=1,
+            )
+            if tasks and tasks[0].status == "completed":
+                return {
+                    "session_id": self.session_id,
+                    "archive_uri": archive_uri,
+                    "task_id": tasks[0].task_id,
+                    "status": "completed",
+                }
+        # Also recover an archive whose phase-1 task registration never happened.
+        # Wait a minute and atomically require zero existing records, so an
+        # uncertain original request and recovery cannot start duplicate loops.
+        orphan = False
+        try:
+            await self._viking_fs.read_file(f"{archive_uri}/.failed.json", ctx=self.ctx)
+        except NotFoundError:
+            orphan = True
+            try:
+                committed_at = datetime.fromisoformat(
+                    self._meta.last_commit_at.replace("Z", "+00:00")
+                )
+                if committed_at.tzinfo is None:
+                    committed_at = committed_at.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - committed_at).total_seconds()
+            except (ValueError, TypeError, AttributeError):
+                raise InvalidArgumentError("Meeting orphan has no valid commit timestamp") from None
+            if self._archive_index_from_uri(archive_uri) != self._meta.commit_count or age < 60:
+                raise InvalidArgumentError(
+                    "Meeting archive is not yet eligible for orphan recovery"
+                )
+        messages = await self._read_archive_messages(archive_uri)
+        if not messages:
+            raise InvalidArgumentError("Meeting archive has no readable messages")
+        task = await tracker.create_if_no_running(
+            "session_commit",
+            self.session_id,
+            account_id=self.ctx.account_id,
+            user_id=self.ctx.user.user_id,
+            require_no_existing=orphan,
+        )
+        if task is None:
+            raise InvalidArgumentError("An extraction task already exists for this session")
+        asyncio.create_task(
+            self._run_memory_extraction(
+                task_id=task.task_id,
+                archive_uri=archive_uri,
+                messages=messages,
+                usage_records=[],
+                first_message_id=messages[0].id,
+                last_message_id=messages[-1].id,
+                memory_policy=meeting_memory_policy(),
+                meeting_context=spec.model_dump(),
             )
         )
         return {

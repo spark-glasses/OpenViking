@@ -283,3 +283,339 @@ async def test_generic_native_operation_cannot_retype_or_delete_question_page(se
     with pytest.raises(ValueError):
         await updater._apply_delete(q["questionUri"], ctx)
     assert (await store.get(q["questionId"]))["state"] == "open"
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    from openviking.session.memory import question_store
+
+    current = {"now": "2030-01-01T12:00:00+00:00"}
+    monkeypatch.setattr(question_store, "now_iso", lambda: current["now"])
+    return current
+
+
+def timed_proposal(**changes):
+    return proposal(
+        purpose="speaker_identity",
+        scope={
+            "speakerRef": "transcript-1:version-1:speaker-0",
+            "sourceVersion": "version-1",
+            "mediaWindows": [{"startMs": 0, "endMs": 10000}],
+        },
+        delivery={
+            "mode": "timeBound",
+            "notBefore": "2030-01-01T11:00:00Z",
+            "expiresAt": "2030-01-01T13:00:00Z",
+        },
+        **changes,
+    )
+
+
+async def create_timed(store, ctx, changes=None):
+    entry = {**timed_proposal(), **(changes or {})}
+    subject = {"kind": "matter", "id": "meeting-1"}
+    records = await store.discover(question_uri(ctx, subject), subject, [entry])
+    return next(q for q in records if q["topicKey"] == entry["topicKey"])
+
+
+def received_event(q, **changes):
+    return event(
+        q,
+        "asked",
+        deliveryReceipt={
+            "deliveryId": q["deliveryId"],
+            "channel": "glasses",
+            "receivedAt": "2030-01-01T11:59:00Z",
+            "messageId": "asked-1",
+            **changes,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_due_and_contextual_candidates_are_disjoint_read_only_views(setup, clock):
+    _, ctx, store = setup
+    contextual = await create(store, ctx)
+    timed = await create_timed(store, ctx)
+    due = await store.due()
+    assert [q["questionId"] for q in due] == [timed["questionId"]]
+    assert [q["questionId"] for q in await store.candidates()] == [contextual["questionId"]]
+    assert due[0]["deliveryId"] == (await store.get(timed["questionId"]))["deliveryId"]
+    assert due[0]["revision"] == timed["revision"]
+    assert due[0]["state"] == "open"
+    assert due[0]["events"] == []
+
+
+@pytest.mark.asyncio
+async def test_due_window_is_half_open_and_expiry_preserves_record(setup, clock):
+    fs, ctx, store = setup
+    q = await create_timed(store, ctx)
+    for now, expected in (
+        ("2030-01-01T10:59:59+00:00", False),
+        ("2030-01-01T11:00:00+00:00", True),
+        ("2030-01-01T12:59:59+00:00", True),
+        ("2030-01-01T13:00:00+00:00", False),
+    ):
+        clock["now"] = now
+        assert bool(await store.due()) is expected
+    stored = await QuestionStore(fs, ctx).get(q["questionId"])
+    assert stored["state"] == "open"
+    assert stored["scope"]["sourceVersion"] == "version-1"
+    assert stored["deliveryId"] == q["deliveryId"]
+
+
+@pytest.mark.asyncio
+async def test_rediscovery_never_renews_window_or_changes_original_speaker_scope(setup, clock):
+    _, ctx, store = setup
+    q = await create_timed(store, ctx)
+    clock["now"] = "2030-01-03T12:00:00+00:00"
+    proposal = timed_proposal()
+    proposal["delivery"] = {
+        "mode": "timeBound",
+        "notBefore": "2030-01-03T11:00:00Z",
+        "expiresAt": "2030-01-03T13:00:00Z",
+    }
+    proposal["scope"]["sourceVersion"] = "version-2"
+    await store.discover(q["questionUri"], q["subject"], [proposal])
+    actual = await store.get(q["questionId"])
+    assert actual["delivery"] == q["delivery"]
+    assert actual["scope"] == q["scope"]
+    assert actual["deliveryId"] == q["deliveryId"]
+    assert actual["revision"] > q["revision"]
+    assert await store.due() == []
+
+
+@pytest.mark.asyncio
+async def test_subject_move_preserves_delivery_id_and_initial_metadata(setup, clock):
+    _, ctx, store = setup
+    q = await create_timed(store, ctx)
+    target = {"kind": "person", "id": "confirmed-anchor"}
+    await store.discover(question_uri(ctx, target), target, [proposal(questionId=q["questionId"])])
+    actual = await store.get(q["questionId"])
+    assert actual["deliveryId"] == q["deliveryId"]
+    assert actual["scope"] == q["scope"]
+    assert actual["subject"] == target
+
+
+@pytest.mark.asyncio
+async def test_generated_text_without_visible_device_receipt_is_not_asked(setup, clock):
+    _, ctx, store = setup
+    q = await create_timed(store, ctx)
+    with pytest.raises(InvalidArgumentError):
+        await store.record(event(q, "asked"))
+    assert (await store.get(q["questionId"]))["events"] == []
+    assert len(await store.due()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"deliveryId": "00000000-0000-4000-8000-000000000001"},
+        {"channel": "generated"},
+        {"messageId": "different-message"},
+        {"receivedAt": "2030-01-01T10:59:59Z"},
+        {"receivedAt": "2030-01-01T13:00:00Z"},
+        {"receivedAt": "2030-01-01T12:00:01Z"},
+        {"receivedAt": "2030-01-01T11:30:00"},
+        {"receivedAt": "invalid"},
+    ],
+)
+async def test_invalid_delivery_receipts_cannot_change_question_state(setup, clock, changes):
+    _, ctx, store = setup
+    q = await create_timed(store, ctx)
+    with pytest.raises(InvalidArgumentError):
+        await store.record(received_event(q, **changes))
+    assert (await store.get(q["questionId"]))["state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_received_time_is_authoritative_and_retry_is_idempotent_after_expiry(setup, clock):
+    fs, ctx, store = setup
+    q = await create_timed(store, ctx)
+    clock["now"] = "2030-01-01T14:00:00+00:00"
+    data = received_event(q)
+    data["evidenceAt"] = "2030-01-01T10:00:00Z"
+    actual = (await store.record(data))["question"]
+    assert actual["state"] == "asked"
+    assert actual["events"][0]["at"] == "2030-01-01T11:59:00+00:00"
+    assert actual["events"][0]["deliveryReceipt"]["channel"] == "glasses"
+    await store.record(event(q, "partial", messageId="late-partial"))
+    retry = await QuestionStore(fs, ctx).record(data)
+    assert retry["duplicate"] is True
+    assert retry["question"]["state"] == "deferred"
+    assert len(retry["question"]["events"]) == 2
+    assert await store.due() == []
+    with pytest.raises(InvalidArgumentError):
+        await store.record(event(q, "asked"))
+
+
+@pytest.mark.asyncio
+async def test_duplicate_delivery_cannot_be_reassigned_to_another_message(setup, clock):
+    _, ctx, store = setup
+    q = await create_timed(store, ctx)
+    await store.record(received_event(q))
+    data = received_event(q, messageId="second-visible-message")
+    data["messageId"] = "second-visible-message"
+    with pytest.raises(InvalidArgumentError):
+        await store.record(data)
+    assert len((await store.get(q["questionId"]))["events"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_deferred_time_bound_respects_deferral_without_renewing_expiry(setup, clock):
+    _, ctx, store = setup
+    q = await create_timed(store, ctx)
+    await store.record(event(q, "deferred", notBefore="2030-01-01T12:30:00Z"))
+    assert await store.due() == []
+    with pytest.raises(InvalidArgumentError):
+        await store.record(received_event(q))
+    clock["now"] = "2030-01-01T12:30:00+00:00"
+    assert (await store.due())[0]["deliveryId"] == q["deliveryId"]
+    await store.record(received_event(q, receivedAt="2030-01-01T12:30:00Z"))
+    await store.record(event(q, "partial", messageId="partial", notBefore="2030-01-01T12:31:00Z"))
+    clock["now"] = "2030-01-01T12:40:00+00:00"
+    assert await store.due() == []
+
+
+@pytest.mark.asyncio
+async def test_late_answer_survives_expiry_rediscovery_and_store_restart(setup, clock):
+    fs, ctx, store = setup
+    q = await create_timed(store, ctx)
+    clock["now"] = "2030-01-02T12:00:00+00:00"
+    await store.record(event(q, "resolved", evidenceText="That speaker was Ethan."))
+    await store.discover(q["questionUri"], q["subject"], [timed_proposal()])
+    actual = await QuestionStore(fs, ctx).get(q["questionId"])
+    assert actual["state"] == "resolved"
+    assert actual["answers"][0]["text"] == "That speaker was Ethan."
+    assert actual["propagation"]["status"] == "pending"
+    assert actual["deliveryId"] == q["deliveryId"]
+    assert await store.due() == []
+
+
+@pytest.mark.asyncio
+async def test_due_is_scoped_limited_and_earliest_expiry_first(setup, clock):
+    fs, ctx, store = setup
+    late = await create_timed(store, ctx)
+    early = await create_timed(
+        store,
+        ctx,
+        {
+            "topicKey": "different_question",
+            "delivery": {
+                "mode": "timeBound",
+                "notBefore": "2030-01-01T11:00:00Z",
+                "expiresAt": "2030-01-01T12:30:00Z",
+            },
+        },
+    )
+    assert [q["questionId"] for q in await store.due(limit=1)] == [early["questionId"]]
+    assert {q["questionId"] for q in await store.due()} == {late["questionId"], early["questionId"]}
+    other_ctx = RequestContext(user=UserIdentifier("account", "bob"), role=Role.ROOT)
+    assert await QuestionStore(fs, other_ctx).due() == []
+    with pytest.raises(InvalidArgumentError):
+        await store.due(limit=100)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("purpose", ""),
+        ("purpose", "x" * 161),
+        ("scope", []),
+        ("scope", {"tooLarge": "x" * 20000}),
+        ("scope", {"tooDeep": [[[[[[[[["x"]]]]]]]]]}),
+        ("scope", {"invalid": float("nan")}),
+        ("scope", {"tooMany": list(range(101))}),
+        ("delivery", {"mode": "unknown"}),
+        ("delivery", {"mode": "contextual", "expiresAt": "2030-01-01T13:00:00Z"}),
+        (
+            "delivery",
+            {
+                "mode": "timeBound",
+                "notBefore": "2030-01-01T13:00:00Z",
+                "expiresAt": "2030-01-01T13:00:00Z",
+            },
+        ),
+        ("delivery", {"mode": "timeBound", "notBefore": "2030-01-01T11:00:00"}),
+    ],
+)
+def test_proposal_delivery_metadata_is_bounded_and_validated(field, value):
+    from openviking.session.memory.question_store import validate_proposals
+
+    entry = {**timed_proposal(), field: value}
+    with pytest.raises(ValueError):
+        validate_proposals([entry], set(entry["sourceRefs"]))
+
+
+def test_proposals_normalize_timezones_and_copy_source_scope():
+    from openviking.session.memory.question_store import validate_proposals
+
+    entry = timed_proposal()
+    entry["delivery"]["notBefore"] = "2030-01-01T03:00:00-08:00"
+    normalized = validate_proposals([entry], set(entry["sourceRefs"]))[0]
+    assert normalized["delivery"]["notBefore"] == "2030-01-01T11:00:00+00:00"
+    normalized["scope"]["sourceVersion"] = "modified"
+    assert entry["scope"]["sourceVersion"] == "version-1"
+
+
+@pytest.mark.asyncio
+async def test_questions_router_exposes_due_get_revision_and_receipt_contract(
+    setup, clock, monkeypatch
+):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from openviking.server.auth import get_request_context
+    from openviking.server.routers import questions
+
+    _, ctx, store = setup
+    q = await create_timed(store, ctx)
+    app = FastAPI()
+    app.include_router(questions.router)
+    app.dependency_overrides[get_request_context] = lambda: ctx
+    monkeypatch.setattr(questions, "store", lambda _ctx: store)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/v1/questions/due", json={"limit": 1})
+        assert response.status_code == 200
+        candidate = response.json()["result"]["questions"][0]
+        reread = (await client.get("/api/v1/questions/" + q["questionId"])).json()["result"]
+        assert candidate["deliveryId"] == reread["deliveryId"]
+        assert candidate["revision"] == reread["revision"]
+        response = await client.post(
+            "/api/v1/questions/record", json=received_event(q, channel="phone")
+        )
+        assert response.status_code == 200
+        assert response.json()["result"]["question"]["state"] == "asked"
+        assert (await client.post("/api/v1/questions/due", json={})).json()["result"][
+            "questions"
+        ] == []
+        assert (await client.post("/api/v1/questions/due", json={"limit": 21})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_explicit_contextual_delivery_keeps_legacy_asked_contract(setup, clock):
+    _, ctx, store = setup
+    subject = {"kind": "self", "id": "self"}
+    q = (
+        await store.discover(
+            question_uri(ctx, subject), subject, [proposal(delivery={"mode": "contextual"})]
+        )
+    )[0]
+    assert [candidate["questionId"] for candidate in await store.candidates()] == [q["questionId"]]
+    assert "deliveryId" not in q
+    actual = (await store.record(event(q, "asked")))["question"]
+    assert actual["state"] == "asked"
+    assert await store.due() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["resolved", "dismissed"])
+async def test_answer_or_dismissal_before_delivery_prevents_due_and_receipt(setup, clock, action):
+    _, ctx, store = setup
+    q = await create_timed(store, ctx)
+    await store.record(event(q, action))
+    assert await store.due() == []
+    with pytest.raises(InvalidArgumentError):
+        await store.record(received_event(q))
+    assert (await store.get(q["questionId"]))["state"] == action

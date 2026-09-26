@@ -740,8 +740,12 @@ The final output of the model must strictly follow the JSON Schema format shown 
                     content = await self.context_provider.execute_tool(
                         ToolCall(id="", name="read", arguments={"uri": uri})
                     )
-                    # 读取出错表示文件不存在（error dict 含 "error" key）
-                    if isinstance(content, Dict) and "error" in content:
+                    # Providers may explicitly distinguish confirmed absence from a
+                    # failed read. Absent targets do not need refetching; the provider
+                    # still validates whether creating that exact target is allowed.
+                    if isinstance(content, Dict) and (
+                        "error" in content or content.get("exists") is False
+                    ):
                         continue
 
                     # execute_tool(MemoryReadTool) 已经返回 parsed dict，直接使用

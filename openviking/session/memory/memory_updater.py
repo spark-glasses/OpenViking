@@ -763,6 +763,10 @@ class MemoryUpdater:
         # Apply unified operations - _apply_edit returns True if edited, False if written
         for resolved_op in operations.upsert_operations:
             try:
+                required_subject = resolved_op.memory_fields.get("meeting_require_subject")
+                if required_subject:
+                    # A newly created meeting must exist before its question can acquire ownership.
+                    await viking_fs.read_file(required_subject, ctx=ctx)
                 await self._apply_upsert(
                     resolved_op,
                     ctx,

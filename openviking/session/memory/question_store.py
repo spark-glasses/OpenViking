@@ -84,6 +84,85 @@ def topic_key(value):
     return value
 
 
+def required_time(value, field):
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be an ISO timestamp with timezone")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("missing timezone")
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO timestamp with timezone") from exc
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def proposal_delivery_metadata(entry):
+    """Validate bounded metadata; providers validate its source-specific authority."""
+    result = {}
+    if "purpose" in entry:
+        purpose = entry["purpose"]
+        if not isinstance(purpose, str) or not 1 <= len(purpose.strip()) <= 160:
+            raise ValueError("Question purpose must contain 1-160 characters")
+        result["purpose"] = purpose.strip()
+    if "scope" in entry:
+        scope = entry["scope"]
+        if not isinstance(scope, dict):
+            raise ValueError("Question scope must be a JSON object")
+
+        def check(value, depth=0):
+            if depth > 8:
+                raise ValueError("Question scope exceeds nesting limit")
+            if isinstance(value, dict):
+                if len(value) > 64 or any(
+                    not isinstance(key, str) or not 1 <= len(key) <= 128 for key in value
+                ):
+                    raise ValueError("Question scope has too many or invalid keys")
+                for child in value.values():
+                    check(child, depth + 1)
+            elif isinstance(value, list):
+                if len(value) > 100:
+                    raise ValueError("Question scope contains too many entries")
+                for child in value:
+                    check(child, depth + 1)
+            elif value is not None and not isinstance(value, (str, bool, int, float)):
+                raise ValueError("Question scope must contain JSON values")
+
+        check(scope)
+        if len(json.dumps(scope, allow_nan=False, ensure_ascii=False).encode("utf-8")) > 20000:
+            raise ValueError("Question scope exceeds 20000 bytes")
+        result["scope"] = copy.deepcopy(scope)
+    if "delivery" in entry:
+        delivery = entry["delivery"]
+        if not isinstance(delivery, dict) or set(delivery) - {"mode", "notBefore", "expiresAt"}:
+            raise ValueError("Invalid question delivery fields")
+        mode = delivery.get("mode")
+        if mode not in ("contextual", "timeBound"):
+            raise ValueError("Invalid question delivery mode")
+        if mode == "contextual":
+            if set(delivery) != {"mode"}:
+                raise ValueError("Contextual delivery does not have a time window")
+            result["delivery"] = {"mode": mode}
+        else:
+            start = required_time(delivery.get("notBefore"), "delivery.notBefore")
+            end = required_time(delivery.get("expiresAt"), "delivery.expiresAt")
+            if datetime.fromisoformat(start) >= datetime.fromisoformat(end):
+                raise ValueError("Question delivery window must end after it starts")
+            result["delivery"] = {"mode": mode, "notBefore": start, "expiresAt": end}
+    return result
+
+
+def delivery_id(item):
+    delivery = item.get("delivery", {})
+    if delivery.get("mode") != "timeBound":
+        return None
+    return str(
+        uuid5(
+            NAMESPACE_URL,
+            f"question-delivery:{item['questionId']}:{delivery['notBefore']}:{delivery['expiresAt']}",
+        )
+    )
+
+
 def validate_proposals(raw, allowed_refs):
     entries = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(entries, list) or len(entries) > 20:
@@ -97,6 +176,9 @@ def validate_proposals(raw, allowed_refs):
             "sourceRefs",
             "relatedSubjectUris",
             "ownershipUncertain",
+            "purpose",
+            "scope",
+            "delivery",
         }:
             raise ValueError(
                 "Invalid question proposal fields; lifecycle is not extraction-controlled"
@@ -122,6 +204,7 @@ def validate_proposals(raw, allowed_refs):
         for name in ("relatedSubjectUris", "ownershipUncertain"):
             if name in entry:
                 item[name] = entry[name]
+        item.update(proposal_delivery_metadata(entry))
         normalized.append(item)
     return normalized
 
@@ -139,6 +222,13 @@ def render_questions(subject, records):
                 f"- State: {item['state']}",
             ]
         )
+        if item.get("purpose"):
+            lines.append(f"- Purpose: {item['purpose']}")
+        if item.get("scope"):
+            lines.append("- Scope: " + json.dumps(item["scope"], ensure_ascii=False))
+        delivery = item.get("delivery", {})
+        if delivery.get("mode") == "timeBound":
+            lines.append(f"- Delivery window: {delivery['notBefore']} to {delivery['expiresAt']}")
         if item.get("notBefore"):
             lines.append(f"- Do not ask before: {item['notBefore']}")
         if item.get("ownershipUncertain"):
@@ -199,6 +289,8 @@ class QuestionStore:
             **copy.deepcopy(item),
             "questionUri": page.uri,
             "subject": copy.deepcopy(page.extra_fields["subject"]),
+            "revision": page.extra_fields.get("revision", 0),
+            **({"deliveryId": delivery_id(item)} if delivery_id(item) else {}),
         }
 
     async def _recover_moves(self):
@@ -275,6 +367,7 @@ class QuestionStore:
         """Native extraction can merge evidence; it cannot mutate user lifecycle."""
         if question_uri(self.ctx, subject) != uri:
             raise InvalidArgumentError("Question subject and URI disagree")
+        proposals = [{**proposal, **proposal_delivery_metadata(proposal)} for proposal in proposals]
         async with owner_lock(self.ctx):
             await self._recover_moves()
             page = await self._load_page(uri)
@@ -329,6 +422,11 @@ class QuestionStore:
                         "answers": [],
                     }
                     records.append(item)
+                # Source identity and the first delivery window survive rediscovery,
+                # subject moves, retries and answers. Late input never renews expiry.
+                for name in ("purpose", "scope", "delivery"):
+                    if name in proposal and name not in item:
+                        item[name] = copy.deepcopy(proposal[name])
                 # User answers/states survive both stale snapshots and rewording.
                 if item["state"] == "open":
                     item["text"] = proposal["text"]
@@ -342,7 +440,7 @@ class QuestionStore:
                 )
                 item["updatedAt"] = now_iso()
             for key, value in (metadata or {}).items():
-                if key.startswith("email_"):
+                if key.startswith(("email_", "meeting_")):
                     page.extra_fields[key] = value
             await self._save(page)
             return [self._public(page, item) for item in records]
@@ -369,6 +467,8 @@ class QuestionStore:
         eligible = []
         terms = set(re.findall(r"\w{3,}", recent_text.casefold()))
         for item in records:
+            if item.get("delivery", {}).get("mode") == "timeBound":
+                continue
             if item["state"] in ("resolved", "dismissed") or (
                 item.get("notBefore") and item["notBefore"] > now
             ):
@@ -385,6 +485,58 @@ class QuestionStore:
         eligible.sort(key=lambda pair: (-pair[0], pair[1]["createdAt"], pair[1]["questionId"]))
         return [item for _, item in eligible[:limit]]
 
+    async def due(self, *, limit=3):
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
+            raise InvalidArgumentError("Question due limit must be between 1 and 20")
+        now = datetime.fromisoformat(now_iso())
+        eligible = []
+        for item in await self.list():
+            delivery = item.get("delivery", {})
+            if delivery.get("mode") != "timeBound" or item["state"] not in ("open", "deferred"):
+                continue
+            start = datetime.fromisoformat(delivery["notBefore"])
+            end = datetime.fromisoformat(delivery["expiresAt"])
+            if item.get("notBefore"):
+                start = max(start, datetime.fromisoformat(item["notBefore"]))
+            already_delivered = any(
+                event.get("deliveryReceipt", {}).get("deliveryId") == item["deliveryId"]
+                for event in item["events"]
+            )
+            if start <= now < end and not already_delivered:
+                eligible.append(item)
+        eligible.sort(key=lambda q: (q["delivery"]["expiresAt"], q["createdAt"], q["questionId"]))
+        return eligible[:limit]
+
+    def _delivery_receipt(self, item, data):
+        receipt = data.get("deliveryReceipt")
+        if not isinstance(receipt, dict) or set(receipt) != {
+            "deliveryId",
+            "channel",
+            "receivedAt",
+            "messageId",
+        }:
+            raise InvalidArgumentError(
+                "Time-bound asked events require a visible-device delivery receipt"
+            )
+        if receipt["deliveryId"] != delivery_id(item):
+            raise InvalidArgumentError("Delivery receipt does not match this question window")
+        if receipt["channel"] not in ("glasses", "phone"):
+            raise InvalidArgumentError("Invalid delivery receipt channel")
+        if receipt["messageId"] != data["messageId"] or not receipt["messageId"]:
+            raise InvalidArgumentError("Delivery receipt message does not match the question event")
+        try:
+            at = required_time(receipt["receivedAt"], "deliveryReceipt.receivedAt")
+        except ValueError as exc:
+            raise InvalidArgumentError(str(exc)) from exc
+        received = datetime.fromisoformat(at)
+        delivery = item["delivery"]
+        start = datetime.fromisoformat(delivery["notBefore"])
+        if not start <= received < datetime.fromisoformat(delivery["expiresAt"]):
+            raise InvalidArgumentError("Delivery receipt is outside the question window")
+        if received > datetime.fromisoformat(now_iso()):
+            raise InvalidArgumentError("Delivery receipt cannot be in the future")
+        return {**receipt, "receivedAt": at}
+
     async def record(self, data):
         action = data["action"]
         role = data["evidenceRole"]
@@ -392,6 +544,27 @@ class QuestionStore:
             raise InvalidArgumentError("Question event role does not match action")
         async with owner_lock(self.ctx):
             page, item = await self._find(data["questionId"])
+            receipt = None
+            if action == "asked" and item.get("delivery", {}).get("mode") == "timeBound":
+                receipt = self._delivery_receipt(item, data)
+                delivered = next(
+                    (
+                        e
+                        for e in item["events"]
+                        if e.get("deliveryReceipt", {}).get("deliveryId") == receipt["deliveryId"]
+                    ),
+                    None,
+                )
+                if delivered:
+                    if delivered["messageId"] != data["messageId"]:
+                        raise InvalidArgumentError(
+                            "This delivery was already received as another message"
+                        )
+                    return {"question": self._public(page, item), "duplicate": True}
+                if item.get("notBefore") and datetime.fromisoformat(
+                    receipt["receivedAt"]
+                ) < datetime.fromisoformat(item["notBefore"]):
+                    raise InvalidArgumentError("Delivery receipt predates the question deferral")
             event_id = str(
                 uuid5(
                     NAMESPACE_URL,
@@ -413,10 +586,14 @@ class QuestionStore:
                 if normalize(item["text"]) not in normalize(data["evidenceText"]):
                     raise InvalidArgumentError("Asked evidence must contain the actual question")
                 if item["state"] in ("asked", "resolved", "dismissed") or (
-                    item.get("notBefore") and item["notBefore"] > now_iso()
+                    not receipt and item.get("notBefore") and item["notBefore"] > now_iso()
                 ):
                     raise InvalidArgumentError("Question is not currently askable")
-            at = normalized_time(data.get("evidenceAt")) or now_iso()
+            at = (
+                receipt["receivedAt"]
+                if receipt
+                else normalized_time(data.get("evidenceAt")) or now_iso()
+            )
             source_ref = f"conversation:{data['conversationId']}/message:{data['messageId']}"
             event = {
                 "eventId": event_id,
@@ -428,6 +605,72 @@ class QuestionStore:
                 "at": at,
                 "turnId": data.get("turnId"),
             }
+            if data.get("confirmedSpeakerAssignment") is not None:
+                if action != "resolved" or item.get("purpose") != "speakerIdentity":
+                    raise InvalidArgumentError(
+                        "Speaker confirmation requires a resolved speaker identity question"
+                    )
+                spec = await self._meeting_spec(item)
+                mapping = data["confirmedSpeakerAssignment"]
+                if not isinstance(mapping, dict) or set(mapping) - {
+                    "contactId",
+                    "personMemoryUri",
+                    "isSelf",
+                }:
+                    raise InvalidArgumentError("Invalid confirmed speaker assignment")
+                is_self = mapping.get("isSelf") is True
+                person = next(
+                    (
+                        p
+                        for p in spec.people
+                        if p.contactId == mapping.get("contactId")
+                        or p.personMemoryUri == mapping.get("personMemoryUri")
+                    ),
+                    None,
+                )
+                uri = person.personMemoryUri if person else mapping.get("personMemoryUri")
+                if is_self and (uri or mapping.get("contactId")):
+                    raise InvalidArgumentError("Self mapping cannot identify another person")
+                if not is_self:
+                    if not isinstance(uri, str) or not re.fullmatch(
+                        re.escape(memory_root(self.ctx)) + r"people/[A-Za-z0-9_-]+\.md", uri
+                    ):
+                        raise InvalidArgumentError(
+                            "Speaker confirmation requires an existing same-user person or frozen candidate"
+                        )
+                    if person and (
+                        (mapping.get("contactId") and mapping["contactId"] != person.contactId)
+                        or (mapping.get("personMemoryUri") and mapping["personMemoryUri"] != uri)
+                    ):
+                        raise InvalidArgumentError("Confirmed contact and person anchor disagree")
+                    if not person:
+                        await self.fs.read_file(uri, ctx=self.ctx)
+                scope = item["scope"]
+                confirmed = {
+                    "speakerRef": scope["speakerRef"],
+                    "sourceRef": scope["sourceRef"],
+                    "sourceVersion": scope["sourceVersion"],
+                    "startMs": scope["startMs"],
+                    "endMs": scope["endMs"],
+                    "personMemoryUri": uri,
+                    "contactId": person.contactId if person else None,
+                    "isSelf": is_self,
+                    "status": "confirmed",
+                    "questionId": item["questionId"],
+                    "answerSourceRef": source_ref,
+                }
+                event["confirmedSpeakerAssignment"] = confirmed
+                item["confirmedSpeakerAssignment"] = confirmed
+            if (
+                action == "resolved"
+                and item.get("purpose") == "speakerIdentity"
+                and data.get("confirmedSpeakerAssignment") is None
+            ):
+                revoked = item.pop("confirmedSpeakerAssignment", None)
+                if revoked:
+                    event["revokedSpeakerAssignment"] = revoked
+            if receipt:
+                event["deliveryReceipt"] = receipt
             item["events"].append(event)
             item["updatedAt"] = now_iso()
             if action != "asked":
@@ -463,6 +706,34 @@ class QuestionStore:
         await self.refresh(page.uri)
         return {"question": public, "duplicate": False}
 
+    async def _meeting_spec(self, item):
+        from openviking.session.memory.meeting_context import MeetingContext
+
+        scope = item.get("scope", {})
+        uri = scope.get("meetingContextUri", "")
+        expected_prefix = f"viking://user/{user_space_fragment(self.ctx)}/sessions/"
+        if (
+            not isinstance(uri, str)
+            or not uri.startswith(expected_prefix)
+            or not uri.endswith("/meeting_context.json")
+            or any(x in uri for x in ("..", "%", "?", "#", "\\"))
+        ):
+            raise InvalidArgumentError("Speaker question lost its frozen meeting context")
+        spec = MeetingContext.model_validate(json.loads(await self.fs.read_file(uri, ctx=self.ctx)))
+        spec.validate_owner(self.ctx)
+        if (
+            scope.get("sourceRef") != spec.sourceRef
+            or scope.get("sourceVersion") != spec.sourceVersion
+            or scope.get("meetingMemoryUri") != spec.meetingMemoryUri
+        ):
+            raise InvalidArgumentError("Speaker question does not match its frozen recording")
+        if not any(
+            w.identity_start == scope.get("startMs") and w.identity_end == scope.get("endMs")
+            for w in spec.mediaWindows
+        ):
+            raise InvalidArgumentError("Speaker question lost its meeting window")
+        return spec
+
     async def propagate(self, question_id, sessions):
         """Persist the answer first, then submit/reconcile one native extraction session."""
         from openviking.message import TextPart
@@ -481,6 +752,28 @@ class QuestionStore:
                 "subject": page.extra_fields["subject"],
                 "questionId": question_id,
             }
+            meeting_spec = None
+            if item.get("purpose") == "speakerIdentity":
+                from openviking.session.memory.meeting_context import meeting_memory_policy
+
+                meeting_spec = await self._meeting_spec(item)
+                scope = item["scope"]
+                meeting_spec.confirmedAssignments = [
+                    a
+                    for a in meeting_spec.confirmedAssignments
+                    if (a.get("speakerRef"), a.get("startMs"), a.get("endMs"))
+                    != (scope["speakerRef"], scope["startMs"], scope["endMs"])
+                ]
+                if item.get("confirmedSpeakerAssignment"):
+                    mapping = item["confirmedSpeakerAssignment"]
+                    meeting_spec.confirmedAssignments = [
+                        a
+                        for a in meeting_spec.confirmedAssignments
+                        if (a.get("speakerRef"), a.get("startMs"), a.get("endMs"))
+                        != (mapping["speakerRef"], mapping["startMs"], mapping["endMs"])
+                    ] + [mapping]
+                session.meta.meeting_context = meeting_spec.model_dump()
+                session.meta.memory_policy = meeting_memory_policy()
             await session._save_meta()
             archive_uri = propagation.get("archiveUri") or f"{session.uri}/history/archive_001"
             try:
@@ -499,7 +792,17 @@ class QuestionStore:
                 if task and task["status"] in ("pending", "running"):
                     propagation["status"] = "submitted"
                 elif failure:
-                    propagation.update(status="failed", error=str(failure)[:2000])
+                    if meeting_spec is not None:
+                        committed = await session.retry_meeting_archive(
+                            archive_uri.rsplit("/", 1)[-1]
+                        )
+                        propagation.update(
+                            status="submitted",
+                            taskId=committed.get("task_id"),
+                            archiveUri=committed.get("archive_uri"),
+                        )
+                    else:
+                        propagation.update(status="failed", error=str(failure)[:2000])
                 else:
                     try:
                         await self.fs.read_file(archive_uri + "/messages.jsonl", ctx=self.ctx)
@@ -507,6 +810,19 @@ class QuestionStore:
                         # No archive means no native write was started. A fixed session
                         # and owner lock allow safe retry after response loss here.
                         if not session.messages:
+                            if meeting_spec is not None:
+                                from openviking.message import Message
+
+                                original_archive = item["scope"]["meetingContextUri"].rsplit(
+                                    "/", 1
+                                )[0]
+                                raw_messages = await self.fs.read_file(
+                                    original_archive + "/messages.jsonl", ctx=self.ctx
+                                )
+                                for line in raw_messages.splitlines():
+                                    if line.strip():
+                                        original = Message.from_dict(json.loads(line))
+                                        session.add_message(original.role, original.parts)
                             event = next(
                                 e for e in item["events"] if e["eventId"] == propagation["eventId"]
                             )
@@ -517,6 +833,10 @@ class QuestionStore:
                                     "question": item["text"],
                                     "userAnswer": event["evidenceText"],
                                     "sourceRef": event["sourceRef"],
+                                    "meetingScope": item.get("scope"),
+                                    "confirmedSpeakerAssignment": item.get(
+                                        "confirmedSpeakerAssignment"
+                                    ),
                                 },
                                 ensure_ascii=False,
                             )
@@ -541,6 +861,19 @@ class QuestionStore:
                     else:
                         # The archive exists but its worker is unknown after a restart.
                         # Never create a second answer session or silently mark success.
-                        propagation.update(status="unknown", archiveUri=archive_uri)
+                        if meeting_spec is not None:
+                            try:
+                                committed = await session.retry_meeting_archive(
+                                    archive_uri.rsplit("/", 1)[-1]
+                                )
+                                propagation.update(
+                                    status="submitted",
+                                    taskId=committed.get("task_id"),
+                                    archiveUri=committed.get("archive_uri"),
+                                )
+                            except InvalidArgumentError:
+                                propagation.update(status="unknown", archiveUri=archive_uri)
+                        else:
+                            propagation.update(status="unknown", archiveUri=archive_uri)
             await self._save(page)
             return self._public(page, item)

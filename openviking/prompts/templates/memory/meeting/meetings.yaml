@@ -1,0 +1,14 @@
+memory_type: meetings
+description: |
+  Cumulative understanding of this recording's distinct meeting windows, decisions,
+  unresolved matters, and versioned speaker evidence. Until a recorded user answer confirms identity, retain speaker labels and candidate hypotheses without stating candidate attendance or attribution as facts. Keep different windows distinct.
+  Create only when the evidence supports useful understanding or a scoped question.
+directory: "viking://user/{{ user_space }}/memories/events/meetings"
+filename_template: "meeting.md"
+enabled: true
+embedding_template: "{{ content }}"
+fields:
+  - name: content
+    type: string
+    description: "Readable Markdown with concrete times, distinct meeting windows, evidence citations and unresolved attribution. Never attribute UNKNOWN or unconfirmed speakers as facts, even if an older document inferred their identity."
+    merge_op: patch

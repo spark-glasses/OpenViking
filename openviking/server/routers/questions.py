@@ -24,6 +24,19 @@ class CandidatesRequest(BaseModel):
     recentText: str = Field(default="", max_length=20000)
 
 
+class DueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit: int = Field(default=3, ge=1, le=20)
+
+
+class DeliveryReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    deliveryId: UUID
+    channel: Literal["glasses", "phone"]
+    receivedAt: datetime
+    messageId: str = Field(min_length=1, max_length=200)
+
+
 class RecordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     questionId: UUID
@@ -36,6 +49,8 @@ class RecordRequest(BaseModel):
     turnId: str | None = None
     notBefore: datetime | None = None
     resolution: str | None = Field(default=None, max_length=5000)
+    deliveryReceipt: DeliveryReceipt | None = None
+    confirmedSpeakerAssignment: dict | None = None
 
 
 def store(ctx):
@@ -57,6 +72,11 @@ async def candidates(body: CandidatesRequest, ctx: RequestContext = Depends(get_
         recent_text=body.recentText,
     )
     return Response(status="ok", result={"questions": questions})
+
+
+@router.post("/due")
+async def due(body: DueRequest, ctx: RequestContext = Depends(get_request_context)):
+    return Response(status="ok", result={"questions": await store(ctx).due(limit=body.limit)})
 
 
 @router.get("/pending-propagation")

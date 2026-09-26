@@ -93,6 +93,15 @@ class MemoryConfig(BaseModel):
         default="", repr=False, description="Server-to-server email bridge credential"
     )
 
+    meeting_source_base_url: str = Field(
+        default="", description="Trusted meeting source bridge; defaults to email_source_base_url"
+    )
+    meeting_source_api_key: str = Field(
+        default="",
+        repr=False,
+        description="Meeting bridge credential; defaults to email_source_api_key",
+    )
+
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="before")

@@ -19,6 +19,7 @@ from openviking.storage import VikingDBManager
 from openviking.storage.viking_fs import VikingFS
 from openviking_cli.exceptions import (
     AlreadyExistsError,
+    InvalidArgumentError,
     NotFoundError,
     NotInitializedError,
 )
@@ -128,6 +129,7 @@ class SessionService:
         session_id: Optional[str] = None,
         memory_policy: Optional[Dict[str, Any]] = None,
         email_context: Optional[Dict[str, Any]] = None,
+        meeting_context: Optional[Dict[str, Any]] = None,
     ) -> Session:
         """Create a session and persist its root path.
 
@@ -142,6 +144,8 @@ class SessionService:
         """
         self._record_lifecycle_metric("create", "attempt")
         try:
+            if email_context is not None and meeting_context is not None:
+                raise InvalidArgumentError("Email and meeting contexts are mutually exclusive")
             if session_id:
                 existing = self.session(ctx, session_id)
                 if await existing.exists():
@@ -158,6 +162,16 @@ class SessionService:
                 session.meta.email_context = spec.model_dump()
                 # Email tasks have a fixed write policy; callers cannot grant profile/peer access.
                 session.meta.memory_policy = email_memory_policy()
+            elif meeting_context is not None:
+                from openviking.session.memory.meeting_context import (
+                    MeetingContext,
+                    meeting_memory_policy,
+                )
+
+                spec = MeetingContext.model_validate(meeting_context)
+                spec.validate_owner(ctx)
+                session.meta.meeting_context = spec.model_dump()
+                session.meta.memory_policy = meeting_memory_policy()
             elif memory_policy is not None:
                 policy = MemoryPolicy.from_dict(memory_policy)
                 policy.validate_memory_types(

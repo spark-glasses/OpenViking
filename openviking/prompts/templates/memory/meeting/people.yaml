@@ -1,0 +1,23 @@
+memory_type: people
+description: |
+  Create or update a supplied person's cumulative understanding from supported meeting
+  statements. If read reports exists=false and canCreate=true for the supplied stable
+  anchor, initialize that document only after a recorded user answer confirms the speaker;
+  no email history or earlier memory is required. This creates a memory file, not a
+  contact or identity. proposeSpeakerAssignments records candidates but never confirms
+  a new identity, regardless of confidence or self-introduction. Only canonical user
+  confirmations authorize person writes; retain their exact source and window.
+  Preserve prior knowledge when updating an existing document.
+directory: "viking://user/{{ user_space }}/memories/people"
+filename_template: "{{ anchorId }}.md"
+enabled: true
+embedding_template: "{{ content }}"
+fields:
+  - name: anchorId
+    type: string
+    description: "Stable anchor ID supplied by the application; do not invent an identity."
+    merge_op: immutable
+  - name: content
+    type: string
+    description: "Readable cumulative Markdown, preserving dates and exact versioned transcript source evidence. Do not copy any speaker statements into a person's facts before user confirmation."
+    merge_op: patch
