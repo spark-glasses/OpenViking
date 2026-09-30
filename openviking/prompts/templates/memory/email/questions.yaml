@@ -32,5 +32,5 @@ fields:
       other existing fully read subjects. Optional ownershipUncertain=true marks a
       provisional self question whose subject cannot yet be resolved. Reuse topicKey
       or questionId for the same uncertainty. No content field: OV renders the single
-      canonical structured record as Markdown. Never provide state, answers, or events.
+      canonical structured record as Markdown. Never provide state, answers, events, delivery, or timing; lifecycle and presentation policy are not extraction-controlled.
     merge_op: replace

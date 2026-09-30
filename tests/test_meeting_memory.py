@@ -299,6 +299,7 @@ async def test_speaker_question_belongs_to_matter_original_window_and_version(se
                         "sourceRefs": [REF],
                         "purpose": "speakerIdentity",
                         "scope": {"speakerRef": SPEAKER, "startMs": 100, "endMs": 1000},
+                        "timing": {"kind": "askNow", "occurredAt": "2099-01-01T00:00:00Z"},
                     }
                 ]
             ),
@@ -308,7 +309,12 @@ async def test_speaker_question_belongs_to_matter_original_window_and_version(se
     entry = json.loads(q.memory_fields["entries"])[0]
     assert entry["scope"]["sourceVersion"] == VERSION
     assert entry["scope"]["endMs"] == 60000
-    assert entry["delivery"]["expiresAt"] == "2026-09-22T14:01:00+00:00"
+    assert entry["timing"] == {
+        "kind": "meetingEnded",
+        "occurredAt": "2026-09-22T12:01:00+00:00",
+        "sourceRefs": [REF],
+    }
+    assert "delivery" not in entry
     assert q.memory_fields["meeting_require_subject"] == MEETING
     assert entry["sourceRefs"] == [REF]
 
@@ -466,7 +472,9 @@ async def test_native_loop_writes_meeting_then_canonical_scoped_question(setup, 
         outcome["questionRefs"][0]["questionId"]
     )
     assert question["subject"]["memoryUri"] == MEETING
-    assert question["state"] == "open" and question["delivery"]["mode"] == "timeBound"
+    assert question["state"] == "open" and question["timing"]["kind"] == "meetingEnded"
+    assert "delivery" not in question
+    assert question["deliveryCycleId"]
     assert outcome["speakerAssignments"][0]["status"] == "unresolved"
     assert outcome["speakerAssignments"][0]["confidence"] == 100
     assert PERSON not in setup.fs.files
@@ -929,7 +937,7 @@ async def test_chunk_header_comes_only_from_frozen_context(setup, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chunk_question_uses_original_window_deadline_and_identity(setup):
+async def test_chunk_question_uses_original_window_time_fact_and_identity(setup):
     p = setup.provider(chunk_spec(setup, 2), chunk_evidence(setup))
     await p.prefetch()
     subject = {"kind": "matter", "id": uuid5(NAMESPACE_URL, MEETING).hex, "memoryUri": MEETING}
@@ -956,7 +964,12 @@ async def test_chunk_question_uses_original_window_deadline_and_identity(setup):
     assert saved["scope"]["startMs"] == 0 and saved["scope"]["endMs"] == 60000
     assert saved["scope"]["evidenceStartMs"] == 100 and saved["scope"]["evidenceEndMs"] == 1000
     assert saved["scope"]["chunkIndex"] == 2
-    assert saved["delivery"]["expiresAt"] == "2026-09-22T14:01:00+00:00"
+    assert saved["timing"] == {
+        "kind": "meetingEnded",
+        "occurredAt": "2026-09-22T12:01:00+00:00",
+        "sourceRefs": [REF],
+    }
+    assert "delivery" not in saved
     assert meeting.memory_fields["meeting_chunk_index"] == 2
     assert meeting.memory_fields["meeting_analyzed_ranges"][0]["startMs"] == 100
 
@@ -1033,7 +1046,7 @@ async def test_native_chunk_result_retains_chunk_zero_without_whole_recording_cl
 
 
 @pytest.mark.asyncio
-async def test_same_speaker_question_is_deduplicated_across_chunks_without_deadline_refresh(setup):
+async def test_same_speaker_question_is_deduplicated_across_chunks_without_time_fact_refresh(setup):
     subject = {"kind": "matter", "id": uuid5(NAMESPACE_URL, MEETING).hex, "memoryUri": MEETING}
     uri = question_uri(setup.ctx, subject)
     store = QuestionStore(setup.fs, setup.ctx)
@@ -1069,4 +1082,5 @@ async def test_same_speaker_question_is_deduplicated_across_chunks_without_deadl
     assert first["questionId"] == later["questionId"]
     assert later["scope"]["chunkIndex"] == 0
     assert later["scope"]["evidenceStartMs"] == 100
-    assert later["delivery"] == first["delivery"]
+    assert later["timing"] == first["timing"]
+    assert later["deliveryCycleId"] == first["deliveryCycleId"]

@@ -541,19 +541,19 @@ async def test_due_is_scoped_limited_and_earliest_expiry_first(setup, clock):
     ],
 )
 def test_proposal_delivery_metadata_is_bounded_and_validated(field, value):
-    from openviking.session.memory.question_store import validate_proposals
+    from openviking.session.memory.question_store import proposal_delivery_metadata
 
     entry = {**timed_proposal(), field: value}
     with pytest.raises(ValueError):
-        validate_proposals([entry], set(entry["sourceRefs"]))
+        proposal_delivery_metadata(entry)
 
 
 def test_proposals_normalize_timezones_and_copy_source_scope():
-    from openviking.session.memory.question_store import validate_proposals
+    from openviking.session.memory.question_store import proposal_delivery_metadata
 
     entry = timed_proposal()
     entry["delivery"]["notBefore"] = "2030-01-01T03:00:00-08:00"
-    normalized = validate_proposals([entry], set(entry["sourceRefs"]))[0]
+    normalized = proposal_delivery_metadata(entry)
     assert normalized["delivery"]["notBefore"] == "2030-01-01T11:00:00+00:00"
     normalized["scope"]["sourceVersion"] = "modified"
     assert entry["scope"]["sourceVersion"] == "version-1"
@@ -619,3 +619,296 @@ async def test_answer_or_dismissal_before_delivery_prevents_due_and_receipt(setu
     with pytest.raises(InvalidArgumentError):
         await store.record(received_event(q))
     assert (await store.get(q["questionId"]))["state"] == action
+
+
+TRANSCRIPT_REF = "transcript:00000000-0000-4000-8000-000000000001"
+
+
+def timing_proposal(**changes):
+    return proposal(
+        sourceRefs=[TRANSCRIPT_REF],
+        timing={
+            "kind": "meetingEnded",
+            "occurredAt": "2030-01-01T03:00:00-08:00",
+            "sourceRefs": [TRANSCRIPT_REF],
+        },
+        **changes,
+    )
+
+
+async def create_with_timing(store, ctx):
+    subject = {"kind": "matter", "id": "meeting-1"}
+    return (await store.discover(question_uri(ctx, subject), subject, [timing_proposal()]))[0]
+
+
+def cycle_event(q, **changes):
+    return event(
+        q,
+        "asked",
+        deliveryReceipt={
+            "deliveryId": q["deliveryCycleId"],
+            "channel": "phone",
+            "receivedAt": "2030-01-01T11:59:00Z",
+            "messageId": "asked-1",
+            **changes,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_timing_is_source_backed_immutable_and_not_a_delivery_window(setup, clock):
+    fs, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    assert q["timing"] == {
+        "kind": "meetingEnded",
+        "occurredAt": "2030-01-01T11:00:00+00:00",
+        "sourceRefs": [TRANSCRIPT_REF],
+    }
+    assert "delivery" not in q and "deliveryId" not in q
+    assert (await store.candidates())[0]["questionId"] == q["questionId"]
+    assert await store.due() == []  # Legacy due endpoint remains a legacy view.
+    changed = timing_proposal()
+    changed["timing"]["occurredAt"] = "2030-01-02T11:00:00Z"
+    await store.discover(q["questionUri"], q["subject"], [changed])
+    reread = await QuestionStore(fs, ctx).get(q["questionId"])
+    assert reread["timing"] == q["timing"]
+    assert reread["deliveryCycleId"] == q["deliveryCycleId"]
+
+
+@pytest.mark.parametrize(
+    "timing",
+    [
+        {"kind": "meetingEnded", "occurredAt": "2030-01-01T11:00:00Z", "sourceRefs": []},
+        {
+            "kind": "meetingEnded",
+            "occurredAt": "2030-01-01T11:00:00Z",
+            "sourceRefs": ["transcript:00000000-0000-4000-8000-000000000002"],
+        },
+        {
+            "kind": "meetingEnded",
+            "occurredAt": "2030-01-01T11:00:00Z",
+            "sourceRefs": ["email:00000000-0000-4000-8000-000000000001"],
+        },
+        {
+            "kind": "meetingEnded",
+            "occurredAt": "2030-01-01T11:00:00",
+            "sourceRefs": [TRANSCRIPT_REF],
+        },
+        {
+            "kind": "meetingEnded",
+            "occurredAt": "2030-01-01T11:00:00Z",
+            "sourceRefs": [TRANSCRIPT_REF],
+            "expiresAt": "2030-01-01T13:00:00Z",
+        },
+        {"kind": "askNow", "occurredAt": "2030-01-01T11:00:00Z", "sourceRefs": [TRANSCRIPT_REF]},
+    ],
+)
+@pytest.mark.asyncio
+async def test_invalid_provider_timing_never_persists(setup, timing):
+    _, ctx, store = setup
+    subject = {"kind": "self", "id": "self"}
+    entry = timing_proposal()
+    entry["timing"] = timing
+    with pytest.raises(ValueError):
+        await store.discover(question_uri(ctx, subject), subject, [entry])
+    assert await store.list() == []
+
+
+@pytest.mark.parametrize("field", ["timing", "delivery", "state", "answers", "events"])
+def test_extraction_cannot_control_presentation_or_user_lifecycle(field):
+    from openviking.session.memory.question_store import validate_proposals
+
+    entry = proposal(**{field: {}})
+    with pytest.raises(ValueError):
+        validate_proposals([entry], set(entry["sourceRefs"]))
+
+
+@pytest.mark.asyncio
+async def test_cycle_changes_only_for_explicit_deferral_and_survives_restart_move(setup, clock):
+    from uuid import NAMESPACE_URL, uuid5
+
+    fs, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    assert q["deliveryCycleId"] == str(
+        uuid5(NAMESPACE_URL, f"question-cycle:{q['questionId']}:initial")
+    )
+    partial = (await store.record(event(q, "partial", notBefore="2030-01-01T12:30:00Z")))[
+        "question"
+    ]
+    assert partial["deliveryCycleId"] == q["deliveryCycleId"]
+    assert partial["events"][-1]["notBefore"] == "2030-01-01T12:30:00+00:00"
+    deferred = (
+        await store.record(
+            event(q, "deferred", messageId="defer-1", notBefore="2030-01-01T04:30:00-08:00")
+        )
+    )["question"]
+    last = deferred["events"][-1]
+    assert last["notBefore"] == "2030-01-01T12:30:00+00:00"
+    assert deferred["deliveryCycleId"] == str(
+        uuid5(NAMESPACE_URL, f"question-cycle:{q['questionId']}:{last['eventId']}")
+    )
+    assert deferred["deliveryCycleId"] != q["deliveryCycleId"]
+    duplicate = await store.record(
+        event(q, "deferred", messageId="defer-1", notBefore="2030-01-01T12:30:00Z")
+    )
+    assert duplicate["duplicate"]
+    assert duplicate["question"]["deliveryCycleId"] == deferred["deliveryCycleId"]
+    target = {"kind": "person", "id": "anchor-1"}
+    await store.discover(question_uri(ctx, target), target, [proposal(questionId=q["questionId"])])
+    fresh = await QuestionStore(fs, ctx).get(q["questionId"])
+    assert fresh["deliveryCycleId"] == deferred["deliveryCycleId"]
+    assert fresh["timing"] == q["timing"]
+    assert fresh["events"] == deferred["events"]
+
+
+@pytest.mark.asyncio
+async def test_implicit_default_deferral_is_not_recorded_as_explicit_user_time(setup, clock):
+    _, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    deferred = (await store.record(event(q, "deferred")))["question"]
+    assert "notBefore" in deferred
+    assert "notBefore" not in deferred["events"][-1]
+    assert deferred["deliveryCycleId"] != q["deliveryCycleId"]
+
+
+@pytest.mark.asyncio
+async def test_cycle_receipt_after_policy_window_and_multichannel_retry_after_answer(setup, clock):
+    fs, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    clock["now"] = "2030-01-03T12:00:00+00:00"
+    data = cycle_event(q, receivedAt="2030-01-03T11:59:00Z")
+    asked = (await store.record(data))["question"]
+    assert asked["state"] == "asked"
+    assert asked["events"][-1]["deliveryReceipt"]["deliveryId"] == q["deliveryCycleId"]
+    await store.record(event(q, "resolved"))
+    data["deliveryReceipt"]["channel"] = "glasses"
+    retry = await QuestionStore(fs, ctx).record(data)
+    assert retry["duplicate"] and retry["question"]["state"] == "resolved"
+    assert len(retry["question"]["events"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_cycle_cannot_reopen_after_deferral_but_recorded_retry_is_safe(setup, clock):
+    _, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    await store.record(cycle_event(q))
+    deferred = (await store.record(event(q, "deferred", notBefore="2030-01-01T12:30:00Z")))[
+        "question"
+    ]
+    assert (await store.record(cycle_event(q)))["duplicate"]
+    with pytest.raises(InvalidArgumentError):
+        await store.record(cycle_event(deferred))
+    clock["now"] = "2030-01-01T12:30:00+00:00"
+    new = cycle_event(deferred, messageId="asked-2", receivedAt="2030-01-01T12:30:00Z")
+    new["messageId"] = "asked-2"
+    assert (await store.record(new))["question"]["state"] == "asked"
+    assert len((await store.get(q["questionId"]))["events"]) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["resolved", "dismissed"])
+async def test_unrecorded_old_cycle_receipt_cannot_reopen_terminal_question(setup, clock, action):
+    _, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    await store.record(event(q, "deferred", notBefore="2030-01-01T11:00:00Z"))
+    await store.record(event(q, action, messageId="terminal"))
+    with pytest.raises(InvalidArgumentError):
+        await store.record(cycle_event(q))
+    assert (await store.get(q["questionId"]))["state"] == action
+
+
+@pytest.mark.asyncio
+async def test_timing_question_can_be_asked_contextually_without_device_receipt(setup, clock):
+    _, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    actual = (await store.record(event(q, "asked")))["question"]
+    assert actual["state"] == "asked"
+    assert "deliveryReceipt" not in actual["events"][-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"receivedAt": "2030-01-01T12:01:00Z"},
+        {"messageId": "wrong"},
+        {"channel": "generated"},
+        {"deliveryId": "00000000-0000-4000-8000-000000000001"},
+    ],
+)
+async def test_cycle_receipt_contract_validates_time_message_channel_and_cycle(
+    setup, clock, changes
+):
+    _, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    with pytest.raises(InvalidArgumentError):
+        await store.record(cycle_event(q, **changes))
+    assert (await store.get(q["questionId"]))["state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_prior_cycle_is_rejected_after_user_deferral(setup, clock):
+    _, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    await store.record(event(q, "deferred", notBefore="2030-01-01T11:00:00Z"))
+    with pytest.raises(InvalidArgumentError):
+        await store.record(cycle_event(q))
+    assert (await store.get(q["questionId"]))["state"] == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_public_route_preserves_timing_cycle_and_user_time_history(setup, clock, monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from openviking.server.auth import get_request_context
+    from openviking.server.routers import questions
+
+    _, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    app = FastAPI()
+    app.include_router(questions.router)
+    app.dependency_overrides[get_request_context] = lambda: ctx
+    monkeypatch.setattr(questions, "store", lambda _ctx: store)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        listed = (await client.get("/api/v1/questions")).json()["result"]["questions"][0]
+        assert listed["timing"] == q["timing"]
+        assert listed["deliveryCycleId"] == q["deliveryCycleId"]
+        response = await client.post("/api/v1/questions/record", json=cycle_event(q))
+        assert response.status_code == 200
+        asked = response.json()["result"]["question"]
+        assert asked["events"][0]["deliveryReceipt"]["deliveryId"] == q["deliveryCycleId"]
+        response = await client.post(
+            "/api/v1/questions/record",
+            json=event(q, "deferred", notBefore="2030-01-01T12:10:00Z"),
+        )
+        assert response.status_code == 200
+        reread = (await client.get("/api/v1/questions/" + q["questionId"])).json()["result"]
+        assert reread["deliveryCycleId"] != q["deliveryCycleId"]
+        assert reread["events"][-1]["eventId"]
+        assert reread["events"][-1]["notBefore"] == "2030-01-01T12:10:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_delayed_receipt_can_verify_original_canonical_wording_after_rediscovery(
+    setup, clock
+):
+    fs, ctx, store = setup
+    q = await create_with_timing(store, ctx)
+    replacement = {**timing_proposal(), "text": "Did that speaker call you Junkuan?"}
+    await store.discover(q["questionUri"], q["subject"], [replacement])
+    reread = await store.get(q["questionId"])
+    assert reread["text"] == replacement["text"]
+    assert reread["deliveryCycleId"] == q["deliveryCycleId"]
+    assert "wordingHistory" not in reread
+    assert "wordingHistory" not in (await store.list())[0]
+    with pytest.raises(InvalidArgumentError):
+        await store.record(event(q, "asked"))  # Ordinary chat must use current wording.
+    with pytest.raises(InvalidArgumentError):
+        await store.record({**cycle_event(q), "evidenceText": "Unrelated invented question?"})
+    actual = await QuestionStore(fs, ctx).record(cycle_event(q))
+    assert actual["question"]["state"] == "asked"
+    assert actual["question"]["events"][-1]["evidenceText"] == q["text"]
+    assert "wordingHistory" not in actual["question"]
+    page = MemoryFileUtils.read(fs.files[q["questionUri"]])
+    assert page.extra_fields["questions"][0]["wordingHistory"] == [q["text"]]

@@ -131,6 +131,30 @@ def proposal_delivery_metadata(entry):
         if len(json.dumps(scope, allow_nan=False, ensure_ascii=False).encode("utf-8")) > 20000:
             raise ValueError("Question scope exceeds 20000 bytes")
         result["scope"] = copy.deepcopy(scope)
+    if "timing" in entry:
+        timing = entry["timing"]
+        if not isinstance(timing, dict) or set(timing) != {"kind", "occurredAt", "sourceRefs"}:
+            raise ValueError("Invalid question timing fields")
+        if timing["kind"] != "meetingEnded":
+            raise ValueError("Invalid question timing kind")
+        refs = timing["sourceRefs"]
+        if (
+            not isinstance(refs, list)
+            or not refs
+            or len(refs) > 20
+            or any(
+                not isinstance(ref, str)
+                or not re.fullmatch(r"transcript:[0-9a-fA-F-]{36}", ref)
+                or ref not in entry.get("sourceRefs", [])
+                for ref in refs
+            )
+        ):
+            raise ValueError("Question timing must reference supplied transcript evidence")
+        result["timing"] = {
+            "kind": "meetingEnded",
+            "occurredAt": required_time(timing["occurredAt"], "timing.occurredAt"),
+            "sourceRefs": sorted(set(refs)),
+        }
     if "delivery" in entry:
         delivery = entry["delivery"]
         if not isinstance(delivery, dict) or set(delivery) - {"mode", "notBefore", "expiresAt"}:
@@ -163,6 +187,24 @@ def delivery_id(item):
     )
 
 
+def delivery_cycle_id(item):
+    """Only an explicit user deferral starts a new presentation opportunity.
+
+    New evidence, partial answers and re-extraction never renew this cycle. The
+    application owns scheduling policy; this identifier only makes receipts and
+    retries stable across process restarts and subject moves.
+    """
+    latest_deferral = next(
+        (
+            event["eventId"]
+            for event in reversed(item.get("events", []))
+            if event["action"] == "deferred"
+        ),
+        "initial",
+    )
+    return str(uuid5(NAMESPACE_URL, f"question-cycle:{item['questionId']}:{latest_deferral}"))
+
+
 def validate_proposals(raw, allowed_refs):
     entries = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(entries, list) or len(entries) > 20:
@@ -178,10 +220,9 @@ def validate_proposals(raw, allowed_refs):
             "ownershipUncertain",
             "purpose",
             "scope",
-            "delivery",
         }:
             raise ValueError(
-                "Invalid question proposal fields; lifecycle is not extraction-controlled"
+                "Invalid question proposal fields; lifecycle and timing are not extraction-controlled"
             )
         topic = topic_key(entry.get("topicKey"))
         if topic in seen:
@@ -226,6 +267,8 @@ def render_questions(subject, records):
             lines.append(f"- Purpose: {item['purpose']}")
         if item.get("scope"):
             lines.append("- Scope: " + json.dumps(item["scope"], ensure_ascii=False))
+        if item.get("timing"):
+            lines.append("- Timing evidence: " + json.dumps(item["timing"], ensure_ascii=False))
         delivery = item.get("delivery", {})
         if delivery.get("mode") == "timeBound":
             lines.append(f"- Delivery window: {delivery['notBefore']} to {delivery['expiresAt']}")
@@ -286,10 +329,11 @@ class QuestionStore:
 
     def _public(self, page, item):
         return {
-            **copy.deepcopy(item),
+            **{key: copy.deepcopy(value) for key, value in item.items() if key != "wordingHistory"},
             "questionUri": page.uri,
             "subject": copy.deepcopy(page.extra_fields["subject"]),
             "revision": page.extra_fields.get("revision", 0),
+            "deliveryCycleId": delivery_cycle_id(item),
             **({"deliveryId": delivery_id(item)} if delivery_id(item) else {}),
         }
 
@@ -422,13 +466,22 @@ class QuestionStore:
                         "answers": [],
                     }
                     records.append(item)
-                # Source identity and the first delivery window survive rediscovery,
-                # subject moves, retries and answers. Late input never renews expiry.
-                for name in ("purpose", "scope", "delivery"):
+                # Source identity and its first timing fact survive rediscovery,
+                # subject moves, retries and answers. Never refresh a meeting's time
+                # to "now" merely because its input was processed late. Preserve
+                # old delivery windows for legacy readers until they are migrated.
+                for name in ("purpose", "scope", "timing", "delivery"):
                     if name in proposal and name not in item:
                         item[name] = copy.deepcopy(proposal[name])
                 # User answers/states survive both stale snapshots and rewording.
                 if item["state"] == "open":
+                    if item["text"] != proposal["text"]:
+                        # A queued canonical delivery may still display an earlier
+                        # wording from this cycle. Keep that exact evidence in OV
+                        # so its delayed receipt remains verifiable after refresh.
+                        history = item.setdefault("wordingHistory", [])
+                        if item["text"] not in history:
+                            history.append(item["text"])
                     item["text"] = proposal["text"]
                 item["sourceRefs"] = sorted(set(item["sourceRefs"]) | set(proposal["sourceRefs"]))
                 item["relatedSubjectUris"] = sorted(
@@ -516,10 +569,8 @@ class QuestionStore:
             "messageId",
         }:
             raise InvalidArgumentError(
-                "Time-bound asked events require a visible-device delivery receipt"
+                "Asked delivery events require a visible-device delivery receipt"
             )
-        if receipt["deliveryId"] != delivery_id(item):
-            raise InvalidArgumentError("Delivery receipt does not match this question window")
         if receipt["channel"] not in ("glasses", "phone"):
             raise InvalidArgumentError("Invalid delivery receipt channel")
         if receipt["messageId"] != data["messageId"] or not receipt["messageId"]:
@@ -529,10 +580,6 @@ class QuestionStore:
         except ValueError as exc:
             raise InvalidArgumentError(str(exc)) from exc
         received = datetime.fromisoformat(at)
-        delivery = item["delivery"]
-        start = datetime.fromisoformat(delivery["notBefore"])
-        if not start <= received < datetime.fromisoformat(delivery["expiresAt"]):
-            raise InvalidArgumentError("Delivery receipt is outside the question window")
         if received > datetime.fromisoformat(now_iso()):
             raise InvalidArgumentError("Delivery receipt cannot be in the future")
         return {**receipt, "receivedAt": at}
@@ -545,7 +592,10 @@ class QuestionStore:
         async with owner_lock(self.ctx):
             page, item = await self._find(data["questionId"])
             receipt = None
-            if action == "asked" and item.get("delivery", {}).get("mode") == "timeBound":
+            if action == "asked" and (
+                data.get("deliveryReceipt") is not None
+                or item.get("delivery", {}).get("mode") == "timeBound"
+            ):
                 receipt = self._delivery_receipt(item, data)
                 delivered = next(
                     (
@@ -561,6 +611,27 @@ class QuestionStore:
                             "This delivery was already received as another message"
                         )
                     return {"question": self._public(page, item), "duplicate": True}
+                # A retry of an already-recorded cycle is safe even after an answer
+                # or another deferral. A new receipt must belong to the current
+                # cycle; old cycles can never reopen a resolved/dismissed question.
+                if receipt["deliveryId"] == delivery_cycle_id(item):
+                    # Application policy chooses when/where to present. OV checks
+                    # user intent below, but does not impose a meeting deadline.
+                    pass
+                elif receipt["deliveryId"] == delivery_id(item):
+                    # Compatibility for callers still using the original bounded
+                    # delivery ID. Do not weaken their historical window contract.
+                    delivery = item["delivery"]
+                    received = datetime.fromisoformat(receipt["receivedAt"])
+                    start = datetime.fromisoformat(delivery["notBefore"])
+                    if not start <= received < datetime.fromisoformat(delivery["expiresAt"]):
+                        raise InvalidArgumentError(
+                            "Delivery receipt is outside the question window"
+                        )
+                else:
+                    raise InvalidArgumentError(
+                        "Delivery receipt does not match this question cycle"
+                    )
                 if item.get("notBefore") and datetime.fromisoformat(
                     receipt["receivedAt"]
                 ) < datetime.fromisoformat(item["notBefore"]):
@@ -583,7 +654,12 @@ class QuestionStore:
                 def normalize(text):
                     return re.sub(r"[^\w]", "", unicodedata.normalize("NFKC", text).casefold())
 
-                if normalize(item["text"]) not in normalize(data["evidenceText"]):
+                valid_wordings = [item["text"]]
+                if receipt:
+                    valid_wordings.extend(item.get("wordingHistory", []))
+                if not any(
+                    normalize(text) in normalize(data["evidenceText"]) for text in valid_wordings
+                ):
                     raise InvalidArgumentError("Asked evidence must contain the actual question")
                 if item["state"] in ("asked", "resolved", "dismissed") or (
                     not receipt and item.get("notBefore") and item["notBefore"] > now_iso()
@@ -669,6 +745,11 @@ class QuestionStore:
                 revoked = item.pop("confirmedSpeakerAssignment", None)
                 if revoked:
                     event["revokedSpeakerAssignment"] = revoked
+            if data.get("notBefore") is not None and action in ("deferred", "partial"):
+                try:
+                    event["notBefore"] = required_time(data["notBefore"], "notBefore")
+                except ValueError as exc:
+                    raise InvalidArgumentError(str(exc)) from exc
             if receipt:
                 event["deliveryReceipt"] = receipt
             item["events"].append(event)
@@ -693,7 +774,7 @@ class QuestionStore:
             }[action]
             if action in ("deferred", "partial"):
                 item["notBefore"] = (
-                    normalized_time(data.get("notBefore"))
+                    event.get("notBefore")
                     or (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
                 )
             else:
