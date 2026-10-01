@@ -74,7 +74,7 @@ for _name, _description, _parameters in [
                     "items": _object(
                         {
                             "speakerRef": {"type": "string"},
-                            "contactId": {"type": "string"},
+                            "personId": {"type": "string"},
                             "personMemoryUri": {"type": "string"},
                             "identifiedName": {"type": "string"},
                             "isSelf": {"type": "boolean"},
@@ -416,7 +416,7 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
                                 "canCreate": True,
                                 "memory_type": "people",
                                 "anchorId": person.anchorId,
-                                "contactId": person.contactId,
+                                "personId": person.personId,
                                 "name": person.name,
                                 "attributionRequired": True,
                             }
@@ -483,7 +483,7 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
             "readTranscript": {"sourceRef", "sourceVersion", "startMs", "endMs", "cursor", "limit"},
             "searchEmails": {
                 "query",
-                "contactId",
+                "personId",
                 "participantEmail",
                 "threadId",
                 "dateRange",
@@ -690,7 +690,7 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
             if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 100:
                 raise ValueError("Invalid speaker confidence")
             person = next(
-                (p for p in self.spec.people if p.contactId == proposal.get("contactId")), None
+                (p for p in self.spec.people if p.personId == proposal.get("personId")), None
             )
             target = person.personMemoryUri if person else proposal.get("personMemoryUri")
             eligible = bool(person and set(person.calendarEventIds) & set(window.calendarEventIds))
@@ -747,7 +747,7 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
                 "sourceVersion": self.spec.sourceVersion,
                 "startMs": window.identity_start,
                 "endMs": window.identity_end,
-                "contactId": person.contactId if person else None,
+                "personId": person.personId if person else None,
                 "personMemoryUri": target,
                 "isSelf": is_self,
                 "confidence": confidence,
@@ -1128,7 +1128,7 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
             ],
             "calendarEventIds": window.calendarEventIds,
             "candidateContactIds": [
-                p.contactId
+                p.personId
                 for p in self.spec.people
                 if set(p.calendarEventIds) & set(window.calendarEventIds)
             ],

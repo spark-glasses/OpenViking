@@ -102,11 +102,11 @@ def update_registry():
         MemoryField(
             name="anchorId",
             field_type="string",
-            description="Stable confirmed person anchor supplied in the task or read from an existing person memory; never invent an identity.",
+            description="Stable application-owned person anchor supplied in the task or read from an existing person memory; never invent an identity.",
             merge_op="replace",
         )
     )
-    people.description = "Cumulative memory of a confirmed person. Preserve source attribution, dated history and uncertainty; use the supplied stable person anchor."
+    people.description = "Cumulative memory of an application-owned person. Preserve pending identity status; analysis does not confirm an identity. Preserve source attribution, dated history and uncertainty; use the supplied stable person anchor."
     registry.get("questions").fields[
         -1
     ].description = "JSON array of proposed questions with topicKey, text, sourceRefs from original conversation messages or actually read email/transcript evidence. Optional questionId must already have been read. No answers or lifecycle changes."
@@ -392,7 +392,14 @@ Questions use structured proposals and original sourceRefs; read the subject's q
         if kind == "self":
             return {"kind": "self", "id": "self"}
         uri = fields.get("subjectMemoryUri", "")
-        check_memory_uri(uri, self.root_uri)
+        try:
+            check_memory_uri(uri, self.root_uri)
+        except ValueError as error:
+            raise ValueError(
+                f"Question subjectMemoryUri must be a full Markdown URI under {self.root_uri}; "
+                "use an actual person or matter URI from the supplied/read context, "
+                "or use subjectKind=self for a question about the user"
+            ) from error
         if (
             kind == "person"
             and uri.startswith(self.root_uri + "people/")

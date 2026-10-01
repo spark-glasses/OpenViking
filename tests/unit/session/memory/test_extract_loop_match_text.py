@@ -228,3 +228,45 @@ class TestFinalOperationsHydration:
             message for message in logged_messages if message.startswith("final_operations=")
         )
         assert '"old_memory_file_content":null' not in final_log
+
+
+class TestRoutingValidationRepair:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('failures, succeeds', [(1, True), (3, False)])
+    async def test_invalid_ownership_is_repaired_with_a_bounded_budget(self, failures, succeeds):
+        from openviking.session.memory.dataclass import ResolvedOperations
+
+        provider = Mock()
+        provider.get_memory_schemas.return_value = [SimpleNamespace(memory_type='people', fields=[])]
+        provider.get_output_language.return_value = 'en'
+        provider.get_tools.return_value = []
+        provider.get_extract_context.return_value = SimpleNamespace(page_id_map=PageIdMap())
+        provider.prefetch = AsyncMock(return_value=[])
+        provider.read_file_contents = {}
+        isolation = Mock()
+        isolation.get_read_scope.return_value = 'user://alice'
+        loop = ExtractLoop(vlm=Mock(model='test'), viking_fs=Mock(), context_provider=provider,
+                           isolation_handler=isolation, max_iterations=5)
+        loop._mark_cache_breakpoint = AsyncMock()
+        loop._call_llm = AsyncMock(return_value=([], AttrDict(people=[])))
+        valid = ResolvedOperations(upsert_operations=[], delete_file_contents=[], errors=[])
+        loop.resolve_operations = AsyncMock(side_effect=[ValueError('Invalid question owner')] * failures + [(valid, [])])
+        loop._check_unread_existing_files = AsyncMock(return_value=[])
+        loop.finalize_operations = AsyncMock()
+        with (
+            patch('openviking.session.memory.extract_loop.get_openviking_config',
+                  return_value=SimpleNamespace(memory=SimpleNamespace(link_enabled=False))),
+            patch('openviking.session.memory.extract_loop.SchemaModelGenerator.generate_all_models'),
+            patch('openviking.session.memory.extract_loop.SchemaModelGenerator.create_structured_operations_model',
+                  return_value=SimpleNamespace(model_json_schema=lambda: {})),
+        ):
+            if succeeds:
+                result, _ = await loop.run()
+                assert result is valid
+                loop.finalize_operations.assert_awaited_once_with(valid, [])
+                assert loop._call_llm.await_count == 2
+            else:
+                with pytest.raises(ValueError, match='Invalid question owner'):
+                    await loop.run()
+                loop.finalize_operations.assert_not_awaited()
+                assert loop._call_llm.await_count == 3

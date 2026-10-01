@@ -71,7 +71,7 @@ def setup(monkeypatch):
             "sourceVersion": "sha256:" + "a" * 64,
             "people": [
                 {
-                    "contactId": "contact-1",
+                    "personId": "contact-1",
                     "anchorId": "anchor-1",
                     "name": "Ethan",
                     "personMemoryUri": "viking://user/alice/memories/people/anchor-1.md",
@@ -107,8 +107,8 @@ def setup(monkeypatch):
 def email_spec():
     return {
         "batchId": "batch-1",
-        "contactId": "contact-1",
-        "contactName": "Ethan",
+        "personId": "contact-1",
+        "personName": "Ethan",
         "emails": ["ethan@example.test"],
         "personMemoryUri": "viking://user/alice/memories/people/contact-1.md",
         "sourceRefs": ["email:00000000-0000-4000-8000-000000000002"],

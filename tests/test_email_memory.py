@@ -78,9 +78,9 @@ def setup(monkeypatch):
     ctx = RequestContext(user=UserIdentifier("account", "alice"), role=Role.ROOT)
     spec = {
         "batchId": "batch-1",
-        "contactId": "current-contact",
+        "personId": "current-contact",
         "anchorId": "stable-person",
-        "contactName": "Ethan",
+        "personName": "Ethan",
         "emails": ["ethan@example.test"],
         "personMemoryUri": PERSON,
         "sourceRefs": [INITIAL_REF],
@@ -150,7 +150,7 @@ def test_email_config_round_trip_and_hard_limits(setup):
 
 def test_email_scope_and_anchor_stay_stable_with_shared_people_schema(setup):
     assert "people" in MemoryTypeRegistry().list_names()
-    provider = setup.provider(contactId="replacement-contact")
+    provider = setup.provider(personId="replacement-contact")
     assert provider._get_registry().get("people").filename_template == "stable-person.md"
     assert set(provider.get_tools()) == {"read", "search", "searchEmails", "readEmail"}
     assert {s.memory_type for s in provider.get_memory_schemas(setup.ctx)} == {
@@ -485,7 +485,7 @@ async def test_retry_creates_no_new_archive_and_keeps_frozen_anchor(setup, monke
     setup.fs.files[ARCHIVE + "/.failed.json"] = "{}"
     setup.fs.files[ARCHIVE + "/messages.jsonl"] = setup.messages[0].to_jsonl()
     session = Session(viking_fs=setup.fs, ctx=setup.ctx, session_id="email-batch")
-    session.meta.email_context = {**setup.spec, "contactId": "changed-live-contact"}
+    session.meta.email_context = {**setup.spec, "personId": "changed-live-contact"}
     session._run_memory_extraction = AsyncMock()
     tracker = SimpleNamespace(
         create_if_no_running=AsyncMock(return_value=SimpleNamespace(task_id="retry-1"))
@@ -496,7 +496,7 @@ async def test_retry_creates_no_new_archive_and_keeps_frozen_anchor(setup, monke
     assert result["archive_uri"] == ARCHIVE
     assert result["task_id"] == "retry-1"
     assert (
-        session._run_memory_extraction.call_args.kwargs["email_context"]["contactId"]
+        session._run_memory_extraction.call_args.kwargs["email_context"]["personId"]
         == "current-contact"
     )
 
@@ -698,11 +698,11 @@ async def test_redo_restores_frozen_provider_configuration(setup, monkeypatch):
             "user_id": "alice",
             "role": "root",
             "task_id": "t1",
-            "email_context": {**setup.spec, "contactId": "stale-mutable-context"},
+            "email_context": {**setup.spec, "personId": "stale-mutable-context"},
         },
     )
     assert (
-        session._run_memory_extraction.call_args.kwargs["email_context"]["contactId"]
+        session._run_memory_extraction.call_args.kwargs["email_context"]["personId"]
         == "current-contact"
     )
     assert session._run_memory_extraction.call_args.kwargs["memory_policy"] == email_memory_policy()

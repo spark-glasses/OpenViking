@@ -244,61 +244,64 @@ The final output of the model must strictly follow the JSON Schema format shown 
 
             # If model returned final operations, check if refetch is needed
             if operations is not None:
-                final_operations, raw_links = await self.resolve_operations(operations)
-                # Check if any write_uris target existing files that weren't read
-                refetch_uris = await self._check_unread_existing_files(final_operations)
-                if refetch_uris:
-                    tracer.info(f"Found unread existing files: {refetch_uris}, refetching...")
-                    # Add refetch results to messages and continue loop
-                    await self._add_refetch_results_to_messages(messages, refetch_uris)
-                    # Allow one extra iteration for refetch
-                    if iteration >= max_iterations:
-                        max_iterations += 1
-                        tracer.info(f"Extended max_iterations to {max_iterations} for refetch")
+                # Routing validates model-proposed ownership before refetch.
+                # It needs the same bounded feedback as later validation; do not
+                # restart the whole operation (or relax user scope) for a bad URI.
+                try:
+                    final_operations, raw_links = await self.resolve_operations(operations)
+                    # Check if any write_uris target existing files that weren't read
+                    refetch_uris = await self._check_unread_existing_files(final_operations)
+                    if refetch_uris:
+                        tracer.info(f"Found unread existing files: {refetch_uris}, refetching...")
+                        # Add refetch results to messages and continue loop
+                        await self._add_refetch_results_to_messages(messages, refetch_uris)
+                        # Allow one extra iteration for refetch
+                        if iteration >= max_iterations:
+                            max_iterations += 1
+                            tracer.info(f"Extended max_iterations to {max_iterations} for refetch")
 
-                    continue
-                patch_errors = self._validate_patch_operations(final_operations)
-                if patch_errors and patch_repair_count == 0:
-                    patch_repair_count += 1
-                    max_iterations += 1
-                    self._disable_tools_for_iteration = True
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": self._build_patch_repair_instruction(patch_errors),
-                        }
-                    )
-                    tracer.info(
-                        f"Extended max_iterations to {max_iterations} for retry patch repair",
-                        console=True,
-                    )
-                    continue
-                validate_operations = getattr(self.context_provider, "validate_operations", None)
-                if validate_operations is not None:
-                    try:
+                        continue
+                    patch_errors = self._validate_patch_operations(final_operations)
+                    if patch_errors and patch_repair_count == 0:
+                        patch_repair_count += 1
+                        max_iterations += 1
+                        self._disable_tools_for_iteration = True
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": self._build_patch_repair_instruction(patch_errors),
+                            }
+                        )
+                        tracer.info(
+                            f"Extended max_iterations to {max_iterations} for retry patch repair",
+                            console=True,
+                        )
+                        continue
+                    validate_operations = getattr(self.context_provider, "validate_operations", None)
+                    if validate_operations is not None:
                         validate_people = getattr(
                             self.context_provider, "validate_canonical_people_operations", None
                         )
                         if validate_people is not None:
                             validate_people(final_operations)
                         validate_operations(final_operations)
-                    except ValueError as error:
-                        if validation_repair_count >= 2 or iteration >= max_iterations:
-                            raise
-                        validation_repair_count += 1
-                        self._disable_tools_for_iteration = False
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"These proposed memory operations cannot be applied: {error}. "
-                                    "Correct the operations before finalizing. For an email citation not yet supplied/read, "
-                                    "read its sourceRef with readEmail if relevant, or remove the unsupported claim. "
-                                    "Use the available tools if evidence is missing; keep confirmed identity and write scopes unchanged."
-                                ),
-                            }
-                        )
-                        continue
+                except ValueError as error:
+                    if validation_repair_count >= 2 or iteration >= max_iterations:
+                        raise
+                    validation_repair_count += 1
+                    self._disable_tools_for_iteration = False
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"These proposed memory operations cannot be applied: {error}. "
+                                "Correct the operations before finalizing. For an email citation not yet supplied/read, "
+                                "read its sourceRef with readEmail if relevant, or remove the unsupported claim. "
+                                "Use the available tools if evidence is missing; keep confirmed identity and write scopes unchanged."
+                            ),
+                        }
+                    )
+                    continue
                 break
             # If no tool calls either, continue to next iteration (don't break!)
             tracer.error(

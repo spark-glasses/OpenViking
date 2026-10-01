@@ -139,10 +139,10 @@ async def load_active_people(viking_fs, ctx):
 
 
 def compact_identity(record):
-    return {
+    result = {
         key: record[key]
         for key in (
-            "contactId",
+            "personId",
             "anchorId",
             "memoryUri",
             "revision",
@@ -151,6 +151,8 @@ def compact_identity(record):
             "deleted",
         )
     }
+    result["confirmationStatus"] = record["profile"].get("confirmationStatus", "confirmed")
+    return result
 
 
 def model_contact_profile(identity):
@@ -190,7 +192,7 @@ def is_person_identity_uri(uri, ctx):
 
 def render_contact_section(identity):
     data = {
-        "contactId": identity["contactId"],
+        "personId": identity["personId"],
         "anchorId": identity["anchorId"],
         "revision": identity["revision"],
         "deleted": identity["deleted"],
@@ -264,7 +266,7 @@ def apply_person_identity(memory, identity):
     memory.extra_fields.update(
         {
             "anchorId": identity["anchorId"],
-            "contactId": identity["contactId"],
+            "personId": identity["personId"],
             "contact_projection_revision": identity["revision"],
             "contact_projection_deleted": identity["deleted"],
         }

@@ -7,7 +7,7 @@ import hashlib
 import json
 import weakref
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Literal, Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -37,6 +37,7 @@ _LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 class ContactProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    confirmationStatus: Literal["pending", "confirmed"] = "confirmed"
     displayName: str = Field(min_length=1, max_length=2000)
     aliases: list[_NAME] = Field(default_factory=list, max_length=100)
     givenName: _SHORT | None = None
@@ -59,7 +60,7 @@ class ContactProfile(BaseModel):
 
 class SyncPersonRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    contactId: UUID
+    personId: UUID
     anchorId: UUID
     revision: int = Field(ge=1, le=9007199254740991, strict=True)
     profile: ContactProfile
@@ -113,7 +114,7 @@ class PersonContactStore:
     def _result(self, record, status):
         return {
             key: record[key]
-            for key in ("memoryUri", "contactId", "anchorId", "revision", "deleted", "indexStatus")
+            for key in ("memoryUri", "personId", "anchorId", "revision", "deleted", "indexStatus")
         } | {"status": status}
 
     async def _index(self, uri):
@@ -134,7 +135,7 @@ class PersonContactStore:
     async def sync(self, value):
         request = SyncPersonRequest.model_validate(value)
         payload = request.model_dump(mode="json")
-        contact_id, anchor = payload["contactId"], payload["anchorId"]
+        contact_id, anchor = payload["personId"], payload["anchorId"]
         digest = hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -175,7 +176,7 @@ class PersonContactStore:
                     "formatVersion": 1,
                     "accountId": self.ctx.account_id,
                     "userId": self.ctx.user.user_id,
-                    "contactId": contact_id,
+                    "personId": contact_id,
                     "anchorId": anchor,
                     "revision": request.revision,
                     "memoryUri": uri,

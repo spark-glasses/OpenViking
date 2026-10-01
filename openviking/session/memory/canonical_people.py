@@ -89,7 +89,7 @@ class CanonicalPeople:
                     "uri": uri,
                     "memoryType": "people",
                     "anchorId": person["anchorId"],
-                    "contactId": person["contactId"],
+                    "personId": person["personId"],
                     "displayName": person.get("displayName", ""),
                     "matchedAliases": sorted(matched[uri]),
                     "identityAmbiguous": uri not in unique,
@@ -120,7 +120,7 @@ class CanonicalPeople:
                     operation.memory_fields["anchorId"] = anchor
                 is_person_entity = (
                     _alias_key(operation.memory_fields.get("category")) in _PERSON_CATEGORIES
-                    or bool(operation.memory_fields.get("contactId"))
+                    or bool(operation.memory_fields.get("personId"))
                     or bool(operation.memory_fields.get("anchorId"))
                 )
                 if operation.memory_type == "entities" and is_person_entity:

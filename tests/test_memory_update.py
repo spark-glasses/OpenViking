@@ -69,7 +69,7 @@ def env(monkeypatch):
         "targets": [
             {
                 "kind": "person",
-                "contactId": "bob-contact",
+                "personId": "bob-contact",
                 "anchorId": "bob-anchor",
                 "memoryUri": PERSON,
                 "displayName": "Bob",
@@ -85,7 +85,7 @@ def env(monkeypatch):
             {
                 "id": "tool-1",
                 "role": "tool",
-                "content": '{"success":true,"contactId":"bob-contact","anchorId":"bob-anchor"}',
+                "content": '{"success":true,"personId":"bob-contact","anchorId":"bob-anchor"}',
             },
         ],
         "sourceKinds": ["email", "transcript"],
@@ -151,7 +151,7 @@ async def test_snapshot_is_complete_pageable_and_preserves_tool_roles(env):
     assert recovered[0]["content"] == "A" * 45000
     assert recovered[0]["sourceRef"] == REF
     assert recovered[1]["role"] == "tool"
-    assert json.loads(recovered[1]["content"])["contactId"] == "bob-contact"
+    assert json.loads(recovered[1]["content"])["personId"] == "bob-contact"
     assert len(provider.evidence) == len(chunks)
     await provider.execute_tool(ToolCall("again", "readContext", {"offset": 0, "limit": 10000}))
     assert len(provider.evidence) == len(chunks)

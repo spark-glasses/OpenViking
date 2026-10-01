@@ -98,7 +98,7 @@ async def record_confirmation(setup):
             "evidenceText": "Yes, that was Ethan.",
             "conversationId": "chat-confirmation",
             "messageId": "answer-1",
-            "confirmedSpeakerAssignment": {"contactId": "contact-1"},
+            "confirmedSpeakerAssignment": {"personId": "contact-1"},
         }
     )
     return result["question"]["confirmedSpeakerAssignment"]
@@ -179,7 +179,7 @@ async def test_missing_unknown_anchor_cannot_be_created_from_name_or_known_perso
     value = await provider._execute("read", {"uri": unknown})
     assert not value.get("canCreate")
     unknown_proposal = proposal(
-        contactId="unknown-contact", personMemoryUri=unknown, identifiedName="Ethan"
+        personId="unknown-contact", personMemoryUri=unknown, identifiedName="Ethan"
     )
     assert (
         provider.propose_assignments([unknown_proposal])["assignments"][0]["status"] == "unresolved"
@@ -254,7 +254,7 @@ async def test_self_introduction_outside_calendar_is_only_a_candidate(setup):
     provider = setup.provider({"people": []})
     await provider._execute("read", {"uri": PERSON})
     candidate = provider.propose_assignments(
-        [proposal(100, contactId=None, personMemoryUri=PERSON, identifiedName="Ethan")]
+        [proposal(100, personId=None, personMemoryUri=PERSON, identifiedName="Ethan")]
     )["assignments"][0]
     assert candidate["candidateEvidenceSupported"] is True
     assert candidate["status"] == "unresolved"

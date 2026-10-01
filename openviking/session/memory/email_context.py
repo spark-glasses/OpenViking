@@ -13,9 +13,9 @@ class EmailContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     batchId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
-    contactId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    personId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     anchorId: Optional[str] = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
-    contactName: str = Field(min_length=1, max_length=256)
+    personName: str = Field(min_length=1, max_length=256)
     emails: list[str] = Field(min_length=1, max_length=32)
     personMemoryUri: str
     sourceRefs: list[str] = Field(default_factory=list, max_length=100)
@@ -24,7 +24,7 @@ class EmailContext(BaseModel):
     maxSourceChars: int = Field(default=200000, ge=1000, le=200000)
 
     def validate_owner(self, ctx) -> None:
-        anchor = self.anchorId or self.contactId
+        anchor = self.anchorId or self.personId
         expected = f"viking://user/{user_space_fragment(ctx)}/memories/people/{anchor}.md"
         if self.personMemoryUri != expected:
             raise ValueError("personMemoryUri must identify this user's stable person anchor")

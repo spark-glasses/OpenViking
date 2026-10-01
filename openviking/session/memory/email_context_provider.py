@@ -57,7 +57,7 @@ register_tool(
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "contactId": {"type": "string"},
+                "personId": {"type": "string"},
                 "participantEmail": {"type": "string"},
                 "threadId": {"type": "string"},
                 "dateRange": {
@@ -94,7 +94,7 @@ def create_email_registry(spec: EmailContext) -> MemoryTypeRegistry:
     registry.load_from_directory(
         str(Path(__file__).parents[2] / "prompts/templates/memory/email"), replace=True
     )
-    anchor = spec.anchorId or spec.contactId
+    anchor = spec.anchorId or spec.personId
     for name in ("people",):
         schema = registry.get(name)
         if schema is None:
@@ -121,7 +121,7 @@ class EmailContextProvider(SessionExtractContextProvider):
         self.root_uri = f"viking://user/{user_space_fragment(self._ctx)}/memories/"
         self.question_uri = question_uri(self._ctx, {"kind": "self", "id": "self"})
         self.person_question_uri = question_uri(
-            self._ctx, {"kind": "person", "id": self.spec.anchorId or self.spec.contactId}
+            self._ctx, {"kind": "person", "id": self.spec.anchorId or self.spec.personId}
         )
         self._question_uris = set()
         self._tool_calls = 0
@@ -150,8 +150,8 @@ class EmailContextProvider(SessionExtractContextProvider):
     def instruction(self):
         identity = json.dumps(
             {
-                "contactId": self.spec.contactId,
-                "name": self.spec.contactName,
+                "personId": self.spec.personId,
+                "name": self.spec.personName,
                 "confirmedEmails": self.spec.emails,
                 "personMemoryUri": self.spec.personMemoryUri,
             },
@@ -289,7 +289,7 @@ Apply only justified changes:
         else:
             allowed = {
                 "query",
-                "contactId",
+                "personId",
                 "participantEmail",
                 "threadId",
                 "dateRange",
@@ -300,7 +300,7 @@ Apply only justified changes:
                 raise ValueError("Unsupported email search argument")
             args["maxResults"] = min(20, max(1, int(args.get("maxResults", 10))))
             if not any(args.get(key) for key in allowed - {"maxResults", "cursor"}):
-                args["contactId"] = self.spec.contactId
+                args["personId"] = self.spec.personId
         headers = {
             "Authorization": f"Bearer {config.email_source_api_key}",
             "X-User-Id": self._ctx.user.user_id,
@@ -369,7 +369,7 @@ Apply only justified changes:
         self._check_uri(memory_uri)
         if kind == "person":
             if memory_uri == self.spec.personMemoryUri:
-                identifier = self.spec.anchorId or self.spec.contactId
+                identifier = self.spec.anchorId or self.spec.personId
             elif (
                 memory_uri.startswith(self.root_uri + "people/")
                 and memory_uri.endswith(".md")

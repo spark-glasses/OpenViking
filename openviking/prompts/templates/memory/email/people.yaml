@@ -1,6 +1,8 @@
 memory_type: people
 description: |
-  A cumulative understanding of one confirmed person, their relationships and ongoing matters.
+  A cumulative understanding of one application-owned person anchor, their relationships and ongoing matters.
+  Opening a pending person authorizes analysis but does not confirm their identity.
+  Preserve the application-managed confirmationStatus.
   Update the same document across batches; preserve existing facts and concrete dates.
   Use email:UUID citations for evidence. Uncertain identity links belong in questions.
 directory: "viking://user/{{ user_space }}/memories/people"
@@ -17,3 +19,7 @@ fields:
     type: string
     description: "Readable Markdown about the confirmed person, relationships, ongoing matters, dated changes and source citations."
     merge_op: patch
+  - name: profileFacts
+    type: string
+    description: 'Optional JSON array of current organization, jobTitle or notes observations. Each item contains field, value, evidenceQuote. Quote exact text from supplied conversation or a source you read, not the application-managed identity section. Only include a newly supported current fact; preserve historical employment in narrative. Never use this field to bind an email, merge identities, or overwrite user corrections.'
+    merge_op: replace

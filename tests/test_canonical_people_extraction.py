@@ -30,7 +30,7 @@ def person(number, display, **profile):
     anchor = str(UUID(int=number))
     profile = {"displayName": display, **profile}
     return {
-        "contactId": f"contact-{number}",
+        "personId": f"contact-{number}",
         "anchorId": anchor,
         "memoryUri": ROOT + f"people/{anchor}.md",
         "revision": 1,
@@ -94,7 +94,7 @@ def env(monkeypatch):
                 "userId": ctx.user.user_id,
                 "accountId": ctx.account_id,
                 "people": {p["anchorId"]: p for p in records},
-                "contacts": {p["contactId"]: p["anchorId"] for p in records},
+                "contacts": {p["personId"]: p["anchorId"] for p in records},
             }
         )
         for p in records:

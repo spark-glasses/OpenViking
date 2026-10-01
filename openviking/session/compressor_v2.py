@@ -490,6 +490,8 @@ class SessionCompressorV2:
                             "events",
                         } and not is_question_uri(uri, ctx):
                             raise ValueError("Recovery target outside meeting memory scope")
+            from openviking.session.memory.people_operation import read_gate
+            identity_epoch = (await read_gate(viking_fs, ctx)).get("epoch", 0)
             await context_provider.prepare_extraction_messages()
             extract_context = context_provider.get_extract_context()
             isolation_handler = MemoryIsolationHandler(
@@ -521,6 +523,8 @@ class SessionCompressorV2:
                     user_ids=read_scope.user_ids,
                     isolation_handler=isolation_handler,
                 )
+                from openviking.session.memory.people_operation import gate_uri
+                exact_lock_paths.append(viking_fs._uri_to_path(gate_uri(ctx), ctx))
                 logger.debug(
                     f"Memory schema locks: exact={exact_lock_paths}, tree={tree_lock_dirs}"
                 )
@@ -570,6 +574,11 @@ class SessionCompressorV2:
 
             orchestrator._transaction_handle = transaction_handle  # 传递给 ExtractLoop
 
+            # Shared with People merge/reassignment. Held through application,
+            # so a completed freeze cannot race a writer that checked old state.
+            from openviking.session.memory.people_operation import check_gate
+            await check_gate(viking_fs, ctx, (memory_update_context or {}).get("operationId"), identity_epoch)
+
             # Run ReAct orchestrator
             if email_context:
                 orchestrator.max_iterations = 10
@@ -581,7 +590,7 @@ class SessionCompressorV2:
                         # Spark's authenticated source bridge rejects stale/deleted batch bindings.
                         await context_provider._email_request(
                             "searchEmails",
-                            {"contactId": email_context["contactId"], "maxResults": 1},
+                            {"personId": email_context["personId"], "maxResults": 1},
                         )
             elif meeting_context:
                 orchestrator.max_iterations = 16
@@ -647,6 +656,9 @@ class SessionCompressorV2:
                     },
                 )
                 result.errors.extend(retry_index_result.errors)
+
+            from openviking.session.memory.people_profile_proposals import collect_profile_proposals
+            await collect_profile_proposals(viking_fs, ctx, result, context_provider, archive_uri)
 
             # Write memory_diff.json to archive directory
             if archive_uri and viking_fs:

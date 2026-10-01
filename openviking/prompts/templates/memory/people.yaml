@@ -1,9 +1,9 @@
 memory_type: people
 description: |
   Cumulative memory of an existing application-owned person anchor. Use this type
-  for a known contact instead of creating an entities person card. Read the canonical
+  for a known People record instead of creating an entities person card. Read the canonical
   person document first and reuse its page_id and anchorId. Never invent an anchor,
-  merge identities, or select an ambiguous same-name candidate. Contact identity
+  promote a pending identity to confirmed, merge identities, or select an ambiguous same-name candidate. People identity
   fields are managed by the application; preserve them and update supported narrative.
 directory: "viking://user/{{ user_space }}/memories/people"
 filename_template: "{{ anchorId }}.md"
@@ -16,5 +16,9 @@ fields:
     merge_op: immutable
   - name: content
     type: string
-    description: "Cumulative readable Markdown with supported facts, dates and original sources. Preserve application-managed contact identity."
+    description: "Cumulative readable Markdown with supported facts, dates and original sources. Preserve application-managed person identity."
     merge_op: patch
+  - name: profileFacts
+    type: string
+    description: 'Optional JSON array of current organization, jobTitle or notes observations. Each item contains field, value, evidenceQuote. Quote exact text from supplied conversation or a source you read, not the application-managed identity section. Only include a newly supported current fact; preserve historical employment in narrative. Never use this field to bind an email, merge identities, or overwrite user corrections.'
+    merge_op: replace

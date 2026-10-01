@@ -56,7 +56,7 @@ def env():
     ctx = RequestContext(user=UserIdentifier("account", "alice"), role=Role.ROOT)
     fs = FS()
     body = {
-        "contactId": CONTACT,
+        "personId": CONTACT,
         "anchorId": ANCHOR,
         "revision": 1,
         "profile": {
@@ -126,9 +126,9 @@ async def test_same_revision_conflict_and_same_anchor_contact_id_remap(env):
     await env.store.sync(env.body)
     with pytest.raises(ConflictError):
         await env.store.sync({**env.body, "profile": {"displayName": "Different person"}})
-    moved = await env.store.sync({**env.body, "revision": 2, "contactId": OTHER})
+    moved = await env.store.sync({**env.body, "revision": 2, "personId": OTHER})
     assert moved["memoryUri"] == env.uri
-    assert moved["contactId"] == OTHER
+    assert moved["personId"] == OTHER
     with pytest.raises(ConflictError):
         await env.store.sync({**env.body, "anchorId": OTHER, "revision": 3})
 
@@ -204,12 +204,12 @@ async def test_model_cannot_overwrite_registered_contact_identity(env):
         parsed={
             "content": "New durable conversation memory.",
             "anchorId": OTHER,
-            "contactId": OTHER,
+            "personId": OTHER,
         },
     )
     repaired = await preserve_person_identity(env.fs, env.ctx, env.uri, changed)
     assert repaired.extra_fields["anchorId"] == ANCHOR
-    assert repaired.extra_fields["contactId"] == CONTACT
+    assert repaired.extra_fields["personId"] == CONTACT
     assert "New durable conversation memory." in repaired.content
     assert repaired.content.count(CONTACT_SECTION_START) == 1
     assert (

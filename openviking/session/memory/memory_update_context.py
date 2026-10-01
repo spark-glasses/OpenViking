@@ -28,14 +28,14 @@ class UpdateOrigin(StrictModel):
 class UpdateTarget(StrictModel):
     kind: Literal["person", "memory"]
     memoryUri: str = Field(min_length=1, max_length=1000)
-    contactId: str | None = Field(default=None, max_length=128, pattern=IDENTIFIER)
+    personId: str | None = Field(default=None, max_length=128, pattern=IDENTIFIER)
     anchorId: str | None = Field(default=None, max_length=128, pattern=IDENTIFIER)
     displayName: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def check_person(self):
-        if self.kind == "person" and not (self.contactId and self.anchorId):
-            raise ValueError("Person targets require resolved contactId and anchorId")
+        if self.kind == "person" and not (self.personId and self.anchorId):
+            raise ValueError("Person targets require resolved personId and anchorId")
         return self
 
 

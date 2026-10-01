@@ -51,7 +51,7 @@ def setup(monkeypatch):
         "sourceVersion": VERSION,
         "people": [
             {
-                "contactId": "contact-1",
+                "personId": "contact-1",
                 "anchorId": "ethan",
                 "name": "Ethan",
                 "emails": ["ethan@example.test"],
@@ -140,7 +140,7 @@ def op(uri, kind, text="Useful understanding."):
 def proposal(confidence=95, **changes):
     return {
         "speakerRef": SPEAKER,
-        "contactId": "contact-1",
+        "personId": "contact-1",
         "confidence": confidence,
         "evidence": [
             {
@@ -378,7 +378,7 @@ async def test_user_confirmation_preserves_frozen_scope_and_rejects_cross_user(s
     }
     with pytest.raises(InvalidArgumentError):
         await store.record(data)
-    data["confirmedSpeakerAssignment"] = {"contactId": "contact-1"}
+    data["confirmedSpeakerAssignment"] = {"personId": "contact-1"}
     result = await store.record(data)
     mapped = result["question"]["confirmedSpeakerAssignment"]
     assert (
@@ -523,7 +523,7 @@ async def test_speaker_answer_propagates_original_frozen_recording_and_mapping(s
             "evidenceText": "Yes, Ethan.",
             "conversationId": "chat",
             "messageId": "answer",
-            "confirmedSpeakerAssignment": {"contactId": "contact-1"},
+            "confirmedSpeakerAssignment": {"personId": "contact-1"},
         }
     )
     session = SimpleNamespace(
@@ -626,7 +626,7 @@ async def test_readable_profile_cannot_be_retyped_as_person_or_entity(setup):
         p.validate_operations(operations(op(profile, "entities")))
     with pytest.raises(ValueError):
         p.propose_assignments(
-            [proposal(contactId=None, personMemoryUri=profile, identifiedName="Ethan")]
+            [proposal(personId=None, personMemoryUri=profile, identifiedName="Ethan")]
         )
     p.assignments = [{"personMemoryUri": profile, "status": "inferred"}]
     with pytest.raises(ValueError):
@@ -697,7 +697,7 @@ async def test_later_negative_answer_revokes_active_confirmed_mapping(setup):
         "evidenceText": "Yes.",
         "conversationId": "chat",
         "messageId": "answer-1",
-        "confirmedSpeakerAssignment": {"contactId": "contact-1"},
+        "confirmedSpeakerAssignment": {"personId": "contact-1"},
     }
     await store.record(data)
     data.pop("confirmedSpeakerAssignment")
@@ -717,7 +717,7 @@ async def test_frozen_confirmation_cannot_restore_a_revoked_canonical_answer(set
         "startMs": 0,
         "endMs": 60000,
         "personMemoryUri": PERSON,
-        "contactId": "contact-1",
+        "personId": "contact-1",
         "isSelf": False,
         "status": "confirmed",
         "questionId": "00000000-0000-4000-8000-000000000111",
@@ -766,7 +766,7 @@ async def test_current_confirmations_are_reloaded_from_canonical_question_record
             "evidenceText": "Yes, Ethan.",
             "conversationId": "chat",
             "messageId": "answer",
-            "confirmedSpeakerAssignment": {"contactId": "contact-1"},
+            "confirmedSpeakerAssignment": {"personId": "contact-1"},
         }
     )
     mapping = recorded["question"]["confirmedSpeakerAssignment"]

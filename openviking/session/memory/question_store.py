@@ -383,6 +383,26 @@ class QuestionStore:
             await self.refresh(source.uri)
         await self.fs.rm(journal_uri, ctx=self.ctx)
 
+    async def move_person(self, from_anchor, to_anchor, target_memory_uri):
+        """Identity merges move question ownership without resetting lifecycle."""
+        subject = {"kind": "person", "id": to_anchor, "memoryUri": target_memory_uri}
+        target_uri = question_uri(self.ctx, subject)
+        async with owner_lock(self.ctx):
+            await self._recover_moves()
+            source = await self._load_page(question_uri(self.ctx, {"kind": "person", "id": from_anchor}))
+            if not source:
+                return
+            for item in list(source.extra_fields.get("questions", [])):
+                target = await self._load_page(target_uri)
+                record = copy.deepcopy(item)
+                if target and any(q["topicKey"] == record["topicKey"] and q["questionId"] != record["questionId"] for q in target.extra_fields["questions"]):
+                    record["topicKey"] = from_anchor + ":" + record["topicKey"]
+                journal_uri = memory_root(self.ctx) + ".question-moves/" + record["questionId"] + ".json"
+                move = {"questionId": record["questionId"], "sourceUri": source.uri,
+                        "targetUri": target_uri, "subject": subject, "question": record}
+                await self.fs.write_file(journal_uri, json.dumps(move, ensure_ascii=False), ctx=self.ctx)
+                await self._finish_move(journal_uri, move)
+
     async def _find(self, question_id):
         UUID(question_id)
         await self._recover_moves()
@@ -689,7 +709,7 @@ class QuestionStore:
                 spec = await self._meeting_spec(item)
                 mapping = data["confirmedSpeakerAssignment"]
                 if not isinstance(mapping, dict) or set(mapping) - {
-                    "contactId",
+                    "personId",
                     "personMemoryUri",
                     "isSelf",
                 }:
@@ -699,13 +719,13 @@ class QuestionStore:
                     (
                         p
                         for p in spec.people
-                        if p.contactId == mapping.get("contactId")
+                        if p.personId == mapping.get("personId")
                         or p.personMemoryUri == mapping.get("personMemoryUri")
                     ),
                     None,
                 )
                 uri = person.personMemoryUri if person else mapping.get("personMemoryUri")
-                if is_self and (uri or mapping.get("contactId")):
+                if is_self and (uri or mapping.get("personId")):
                     raise InvalidArgumentError("Self mapping cannot identify another person")
                 if not is_self:
                     if not isinstance(uri, str) or not re.fullmatch(
@@ -715,7 +735,7 @@ class QuestionStore:
                             "Speaker confirmation requires an existing same-user person or frozen candidate"
                         )
                     if person and (
-                        (mapping.get("contactId") and mapping["contactId"] != person.contactId)
+                        (mapping.get("personId") and mapping["personId"] != person.personId)
                         or (mapping.get("personMemoryUri") and mapping["personMemoryUri"] != uri)
                     ):
                         raise InvalidArgumentError("Confirmed contact and person anchor disagree")
@@ -729,7 +749,7 @@ class QuestionStore:
                     "startMs": scope["startMs"],
                     "endMs": scope["endMs"],
                     "personMemoryUri": uri,
-                    "contactId": person.contactId if person else None,
+                    "personId": person.personId if person else None,
                     "isSelf": is_self,
                     "status": "confirmed",
                     "questionId": item["questionId"],

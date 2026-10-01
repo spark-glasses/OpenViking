@@ -13,7 +13,7 @@ MEETING_MEMORY_TYPES = frozenset({"people", "meetings", "entities", "events", "q
 
 class MeetingPerson(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    contactId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    personId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     anchorId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=256)
     emails: list[str] = Field(default_factory=list, max_length=32)

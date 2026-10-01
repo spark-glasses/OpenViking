@@ -21,3 +21,7 @@ fields:
     type: string
     description: "Readable cumulative Markdown, preserving dates and exact versioned transcript source evidence. Do not copy any speaker statements into a person's facts before user confirmation."
     merge_op: patch
+  - name: profileFacts
+    type: string
+    description: 'Optional JSON array of current organization, jobTitle or notes observations. Each item contains field, value, evidenceQuote. Quote exact text from supplied conversation or a source you read, not the application-managed identity section. Only include a newly supported current fact; preserve historical employment in narrative. Never use this field to bind an email, merge identities, or overwrite user corrections.'
+    merge_op: replace
