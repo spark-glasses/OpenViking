@@ -2634,7 +2634,11 @@ class Session:
             elif isinstance(p, ContextPart) and p.abstract:
                 lines.append(f"[context] {p.abstract}")
         body = "\n".join(lines) if lines else "(no content)"
-        return f"[{m.role}]: {body}"
+        from openviking.message.conversation_structure import conversation_structure
+
+        structure = conversation_structure(m)
+        provenance = f"[context={json.dumps(structure, ensure_ascii=False)}]" if structure else ""
+        return f"[{m.role}]{provenance}: {body}"
 
     def _generate_archive_summary(
         self,
