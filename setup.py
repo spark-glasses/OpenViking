@@ -543,6 +543,7 @@ setup(
     cmdclass=cmdclass,
     package_data={
         "openviking": [
+            "session/memory/source_tool_contracts.json",
             "lib/ragfs_python*.so",
             "lib/ragfs_python*.pyd",
             "bin/ov",

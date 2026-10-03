@@ -1,0 +1,880 @@
+{
+  "tools": [
+    {
+      "name": "slackGetIdentity",
+      "provider": "slack",
+      "description": "Read the connected Slack workspace and the current user's Slack ID. Use slackGetUser for profile details.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "slackListChannels",
+      "provider": "slack",
+      "description": "List accessible Slack channels/conversations. Resolve names to IDs, inspect purpose/topic, and follow nextCursor for further results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 100.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "types": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "excludeArchived": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "slackFetchHistory",
+      "provider": "slack",
+      "description": "Read a channel or DM timeline. Thread replies are not included; use slackFetchThread. oldest/latest are Unix timestamps; preserve nextCursor to continue.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "oldest": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d+)?$"
+          },
+          "latest": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d+)?$"
+          }
+        },
+        "required": [
+          "channel"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "slackFetchThread",
+      "provider": "slack",
+      "description": "Read a Slack thread by channel and root threadTs, including the root and replies across pages. Keep reading nextCursor for a complete discussion; later pages may omit the root.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "threadTs": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+$"
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "channel",
+          "threadTs"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "slackSearchMessages",
+      "provider": "slack",
+      "description": "Search Slack messages using in:, from:, exact phrases, and before/after:YYYY-MM-DD. Hits are discovery evidence, not complete threads. Read the thread/history before concluding; follow nextCursor.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "count": {
+            "description": "Maximum items per page; default 20.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "score",
+              "timestamp"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "slackListUsers",
+      "provider": "slack",
+      "description": "List Slack users and profile information. query filters only each returned page; continue nextCursor even if no candidates match. Compare People names/aliases, then ask the user to confirm identity instead of merging by name.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "query": {
+            "description": "Case-insensitive name or email candidate search. A name match is not a confirmed People identity.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "slackGetUser",
+      "provider": "slack",
+      "description": "Read one Slack user profile by userId; email is available only when granted by the connection. Matching names suggest candidates, not confirmed People identities.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "userId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearGetIdentity",
+      "provider": "linear",
+      "description": "Read the current Linear user and organization identity.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearListUsers",
+      "provider": "linear",
+      "description": "Find Linear users by name, display name or email, with pagination. A matching name is an identity candidate; ask the user before treating it as a confirmed People association.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "query": {
+            "description": "Case-insensitive name or email candidate search. A name match is not a confirmed People identity.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearGetUser",
+      "provider": "linear",
+      "description": "Read one Linear user's profile by userId.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "userId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearListTeams",
+      "provider": "linear",
+      "description": "List Linear teams with IDs, names, keys and descriptions; follow nextCursor. Teams and Projects are different objects.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearListTeamMembers",
+      "provider": "linear",
+      "description": "List members of a specific Linear team; follow nextCursor. Use these profiles as candidates when resolving People identities.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "teamId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "teamId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearListWorkflowStates",
+      "provider": "linear",
+      "description": "List the named workflow states and state IDs for one Linear team. Use the returned IDs when updating an issue's state.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "teamId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "teamId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearListProjects",
+      "provider": "linear",
+      "description": "List external Linear projects with summaries, leads and statuses. query filters project names. These objects are source material, not automatically the same as Spark memory Projects.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearGetProject",
+      "provider": "linear",
+      "description": "Read one Linear project's full description/content, lead, status and team references. Use linearListIssues for its work.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "projectId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearListIssues",
+      "provider": "linear",
+      "description": "List non-archived issues filtered by project, team, assignee, creator, state and updated time. query matches a substring of title OR description, not comments. Filters combine with AND. assigneeId/creatorId accept 'me'. Use linearGetIssue for a known ID or key; follow nextCursor.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "first": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "teamId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "assigneeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "creatorId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "stateId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "stateType": {
+            "type": "string",
+            "enum": [
+              "triage",
+              "backlog",
+              "unstarted",
+              "started",
+              "completed",
+              "canceled",
+              "duplicate"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "updatedAfter": {
+            "description": "Inclusive updatedAt lower bound.",
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "updatedBefore": {
+            "description": "Exclusive updatedAt upper bound.",
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearGetIssue",
+      "provider": "linear",
+      "description": "Read a specific Linear issue by UUID or issue key, including its full description, assignee, creator, state, project and team. Comments are separate: use linearListComments.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "issueId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearListComments",
+      "provider": "linear",
+      "description": "Read comments on one issue, including authors and timestamps; follow nextCursor for the discussion. Commenting does not imply being the issue assignee.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "issueId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "linearListUpdatedComments",
+      "provider": "linear",
+      "description": "List comments updated in [updatedAfter, updatedBefore), including their issue or project-update association. This is independent of issue updatedAt. Follow nextCursor.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "description": "Continue with the previous result's nextCursor, including after an empty filtered page.",
+            "type": "string",
+            "maxLength": 1000
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "updatedAfter": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "updatedBefore": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          }
+        },
+        "required": [
+          "updatedAfter",
+          "updatedBefore"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "readSourceSnapshot",
+      "description": "Read the retained sourceRef + sourceVersion cited by a memory, not the current external state. Continue with nextOffset if needed.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "slack",
+              "linear"
+            ]
+          },
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "sourceRef": {
+            "type": "string",
+            "pattern": "^collaboration:[0-9a-f]{64}$"
+          },
+          "sourceVersion": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 24000
+          }
+        },
+        "required": [
+          "provider",
+          "sourceRef",
+          "sourceVersion"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "listDailyActivity",
+      "description": "Browse the fixed daily window as Slack discussion and Linear issue/comment entries. This is a directory, not complete content. Follow nextCursor even after empty results, then read concrete source objects. In a daily memory run the server supplies the fixed window.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "slack",
+              "linear"
+            ]
+          },
+          "connectionId": {
+            "description": "Explicit connected account when more than one is available; must belong to the current user.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "workspaceId": {
+            "description": "Slack workspace or Linear organization ID. Must be within this task's granted sources.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "limit": {
+            "description": "Maximum items per page; default 50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "windowStart": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "windowEnd": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

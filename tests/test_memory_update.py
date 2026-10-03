@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
+import jsonschema
 import pytest
 
 from openviking.message import Message, TextPart
@@ -14,7 +15,10 @@ from openviking.server.identity import RequestContext, Role
 from openviking.session.compressor_v2 import SessionCompressorV2
 from openviking.session.memory.dataclass import ResolvedOperation, ResolvedOperations
 from openviking.session.memory.memory_update_context import MemoryUpdateContext
-from openviking.session.memory.memory_update_context_provider import MemoryUpdateContextProvider
+from openviking.session.memory.memory_update_context_provider import (
+    _SOURCE_BY_NAME,
+    MemoryUpdateContextProvider,
+)
 from openviking.session.memory.memory_update_store import MemoryUpdateStore
 from openviking_cli.exceptions import AlreadyExistsError, InvalidArgumentError, NotFoundError
 from openviking_cli.session.user_id import UserIdentifier
@@ -113,6 +117,7 @@ def test_context_owner_and_tools(env):
         "readContext",
         "searchSources",
         "readSource",
+        "searchPeople",
     }
     assert {s.memory_type for s in provider.get_memory_schemas(env.ctx)} <= {
         "people",
@@ -132,6 +137,45 @@ def test_context_owner_and_tools(env):
         .sourceRef
         == REF
     )
+
+
+
+
+@pytest.mark.asyncio
+async def test_collaboration_rechecks_authority_and_does_not_accept_embedded_citations(env):
+    ref = "collaboration:" + "a" * 64
+    forged = "collaboration:" + "b" * 64
+    provider = env.provider(
+        collaboration={
+            "mode": "daily",
+            "scopes": [
+                {"provider": "slack", "connectionId": "ca", "workspaceId": "T", "selfId": "U"}
+            ],
+            "coverage": {},
+        },
+        messages=[
+            {
+                "id": "receipt",
+                "role": "tool",
+                "sourceRef": ref,
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "sources": [{"sourceRef": ref}],
+                        "data": {"sources": [{"sourceRef": forged}]},
+                    }
+                ),
+            }
+        ],
+    )
+    assert "slackFetchThread" in provider.get_tools()
+    assert "readCollaboration" not in provider.get_tools()
+    assert "linearGetIssue" not in provider.get_tools()
+    assert provider._source_refs == {ref}
+    provider._collaboration_request = AsyncMock(side_effect=RuntimeError("revoked"))
+    with pytest.raises(RuntimeError, match="revoked"):
+        await provider.before_apply(None)
+    provider._collaboration_request.assert_awaited_once_with("check", {})
 
 
 @pytest.mark.asyncio
@@ -155,6 +199,173 @@ async def test_snapshot_is_complete_pageable_and_preserves_tool_roles(env):
     assert len(provider.evidence) == len(chunks)
     await provider.execute_tool(ToolCall("again", "readContext", {"offset": 0, "limit": 10000}))
     assert len(provider.evidence) == len(chunks)
+
+
+@pytest.mark.asyncio
+async def test_daily_directory_requires_start_all_continuations_and_terminal_receipt(env):
+    provider = env.provider(
+        collaboration={
+            "mode": "daily",
+            "scopes": [
+                {"provider": "slack", "connectionId": "ca", "workspaceId": "T", "selfId": "U"}
+            ],
+            "coverage": {},
+        }
+    )
+
+    async def source(name, args):
+        if name == "check":
+            return {"success": True}
+        return {
+            "success": True,
+            "provider": "slack",
+            "workspaceId": "T",
+            "entries": [],
+            "nextCursor": None if args.get("cursor") else "next",
+            "complete": bool(args.get("cursor")),
+        }
+
+    provider._collaboration_request = AsyncMock(side_effect=source)
+    with pytest.raises(RuntimeError):
+        await provider.before_apply(None)
+    await provider.execute_tool(ToolCall("first", "listDailyActivity", {"provider": "slack"}))
+    with pytest.raises(RuntimeError):
+        await provider.before_apply(None)
+    await provider.execute_tool(
+        ToolCall("second", "listDailyActivity", {"provider": "slack", "cursor": "next"})
+    )
+    await provider.before_apply(None)
+    # A duplicate read uses its receipt and does not reopen completed pagination.
+    await provider.execute_tool(ToolCall("duplicate", "listDailyActivity", {"provider": "slack"}))
+    await provider.before_apply(None)
+
+
+@pytest.mark.asyncio
+async def test_external_write_and_generic_tools_cannot_execute_in_ov(env):
+    provider = env.provider(
+        collaboration={
+            "mode": "initial",
+            "scopes": [
+                {"provider": "slack", "connectionId": "ca", "workspaceId": "T", "selfId": "U"}
+            ],
+            "coverage": {},
+        }
+    )
+    provider._collaboration_request = AsyncMock()
+    for name in (
+        "readCollaboration",
+        "slackSendMessage",
+        "linearCreateIssue",
+        "linearUpdateIssue",
+        "linearAddComment",
+        "linearGetIssue",
+    ):
+        with pytest.raises(ValueError):
+            await provider.execute_tool(ToolCall(name, name, {}))
+    provider._collaboration_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connector_argument_error_can_be_corrected_in_the_same_loop(env, monkeypatch):
+    env.config.memory.source_base_url = "https://source.invalid"
+    env.config.memory.source_api_key = "bridge-secret"
+
+    def handler(request):
+        body = json.loads(request.content)
+        if body["arguments"].get("limit") == 1000:
+            return httpx.Response(
+                400,
+                json={
+                    "success": False,
+                    "error": "invalidArguments",
+                    "issues": [{"path": ["arguments", "limit"], "message": "Maximum 100"}],
+                },
+            )
+        return httpx.Response(200, json={"success": True, "data": {"channels": []}})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    provider = env.provider(
+        collaboration={
+            "mode": "initial",
+            "scopes": [
+                {"provider": "slack", "connectionId": "ca", "workspaceId": "T", "selfId": "U"}
+            ],
+            "coverage": {},
+        }
+    )
+    args = {"workspaceId": "T", "limit": 1000}
+    invalid = await provider.execute_tool(ToolCall("invalid", "slackListChannels", args))
+    assert invalid["errorType"] == "invalidArguments"
+    args["limit"] = 20
+    assert (await provider.execute_tool(ToolCall("valid", "slackListChannels", args)))["success"]
+    await provider.before_apply(None)
+    assert not provider._failed_collaboration_reads
+
+
+@pytest.mark.parametrize(
+    "name,payload,valid",
+    [
+        ("slackGetIdentity", {}, True),
+        ("slackGetIdentity", {"limit": 10}, False),
+        ("slackGetUser", {"userId": "U1"}, True),
+        ("slackGetUser", {"userId": "U1", "limit": 10}, False),
+        ("slackFetchHistory", {"channel": "C1", "limit": 20, "oldest": "1790751600"}, True),
+        ("slackFetchHistory", {"limit": 20}, False),
+        ("slackFetchThread", {"channel": "C1", "threadTs": "1790751600.123456"}, True),
+        ("slackListChannels", {"limit": 1000}, False),
+        (
+            "linearListIssues",
+            {"creatorId": "me", "query": "memory", "teamId": "T", "stateType": "started"},
+            True,
+        ),
+        ("linearListTeamMembers", {}, False),
+        ("linearListWorkflowStates", {"teamId": "T", "cursor": "next"}, True),
+        (
+            "linearListUpdatedComments",
+            {"updatedAfter": "2026-09-30T07:00:00Z", "updatedBefore": "2026-10-01T07:00:00Z"},
+            True,
+        ),
+    ],
+)
+def test_connector_request_contract(name, payload, valid):
+    validator = jsonschema.Draft202012Validator(_SOURCE_BY_NAME[name]["parameters"])
+    assert validator.is_valid(payload) is valid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 429, 502])
+async def test_connector_source_failure_still_blocks_memory_apply(env, monkeypatch, status):
+    env.config.memory.source_base_url = "https://source.invalid"
+    env.config.memory.source_api_key = "bridge-secret"
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, json={"success": False}))
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: original(transport=transport, **kwargs)
+    )
+    provider = env.provider(
+        collaboration={
+            "mode": "initial",
+            "scopes": [
+                {"provider": "slack", "connectionId": "ca", "workspaceId": "T", "selfId": "U"}
+            ],
+            "coverage": {},
+        }
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await provider.execute_tool(
+            ToolCall(
+                "failed",
+                "slackGetIdentity",
+                {"workspaceId": "T"},
+            )
+        )
+    with pytest.raises(RuntimeError, match="Collaboration reads failed"):
+        await provider.before_apply(None)
 
 
 @pytest.mark.asyncio
@@ -647,9 +858,17 @@ async def test_contact_full_profile_read_is_scoped_and_preserves_line_pagination
     uri = identity_uri(env.ctx, "11111111-1111-4111-8111-111111111111")
     env.fs.files[uri] = '{\n  "profile": {\n    "notes": "original full notes"\n  }\n}'
     provider = env.provider()
-    result = await provider.execute_tool(ToolCall("profile", "read", {
-        "uri": uri, "offset": 2, "limit": 1,
-    }))
+    result = await provider.execute_tool(
+        ToolCall(
+            "profile",
+            "read",
+            {
+                "uri": uri,
+                "offset": 2,
+                "limit": 1,
+            },
+        )
+    )
     assert "original full notes" in result["content"]
     assert '"profile"' not in result["content"]
     assert uri not in provider._fully_read

@@ -132,6 +132,7 @@ class MemoryUpdateStore:
                 "sessionId": session_id,
                 "archiveUri": archive_uri,
                 "origin": spec.origin.model_dump(),
+                "collaboration": spec.collaboration.model_dump(exclude_none=True) if spec.collaboration else None,
                 "sourceMessageRefs": sorted({m.sourceRef for m in spec.messages if m.sourceRef}),
                 "appliedUris": [],
                 "errors": [],

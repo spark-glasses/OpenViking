@@ -25,6 +25,25 @@ class UpdateOrigin(StrictModel):
     toolCallId: str = Field(min_length=1, max_length=200)
 
 
+class AutomationOrigin(StrictModel):
+    kind: Literal["automation"]
+    runId: str = Field(min_length=1, max_length=200)
+
+
+class CollaborationScope(StrictModel):
+    provider: Literal["slack", "linear"]
+    connectionId: str = Field(min_length=1, max_length=256)
+    workspaceId: str = Field(min_length=1, max_length=256)
+    selfId: str = Field(min_length=1, max_length=256)
+
+
+class CollaborationContext(StrictModel):
+    mode: Literal["initial", "daily", "conversation"]
+    scopes: list[CollaborationScope] = Field(min_length=1, max_length=20)
+    window: dict | None = None
+    coverage: dict = Field(default_factory=dict)
+
+
 class UpdateTarget(StrictModel):
     kind: Literal["person", "memory"]
     memoryUri: str = Field(min_length=1, max_length=1000)
@@ -50,7 +69,8 @@ class UpdateMessage(StrictModel):
 class MemoryUpdateContext(StrictModel):
     operationId: str = Field(min_length=1, max_length=128, pattern=IDENTIFIER)
     text: str = Field(min_length=1, max_length=50000)
-    origin: UpdateOrigin
+    origin: UpdateOrigin | AutomationOrigin
+    collaboration: CollaborationContext | None = None
     targets: list[UpdateTarget] = Field(default_factory=list, max_length=20)
     messages: list[UpdateMessage] = Field(default_factory=list, max_length=10000)
     sourceKinds: list[Literal["email", "transcript"]] = Field(default_factory=list, max_length=2)
@@ -70,7 +90,7 @@ class MemoryUpdateContext(StrictModel):
                 raise ValueError("Person target must use its resolved stable anchor")
         for message in self.messages:
             if message.sourceRef and not re.fullmatch(
-                r"conversation:[^\s]+/message:[^\s]+", message.sourceRef
+                r"conversation:[^\s]+/message:[^\s]+|collaboration:[0-9a-f]{64}", message.sourceRef
             ):
                 raise ValueError("Context messages require conversation message source references")
 
