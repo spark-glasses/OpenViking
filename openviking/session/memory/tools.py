@@ -326,14 +326,13 @@ class MemoryLsTool(MemoryTool):
             # Format: filename size (e.g., "file.md 1.2K")
             result_lines = []
             for e in entries:
-                if not e.get("isDir", False):
-                    # Extract name from entry or fallback to uri
-                    name = e.get("name", "")
-                    if not name:
-                        uri = e.get("uri", "")
-                        name = uri.rsplit("/", 1)[-1] if "/" in uri else uri
-                    size = e.get("size", 0)
-                    result_lines.append(f"{name} {_format_size(size)}")
+                name = e.get("name") or e.get("uri", "").rstrip("/").rsplit("/", 1)[-1]
+                # Canonical People are directories. Include them so an agent can
+                # traverse to profile.json, memory.md and questions.md.
+                if e.get("isDir", False):
+                    result_lines.append(f"{name}/")
+                else:
+                    result_lines.append(f"{name} {_format_size(e.get('size', 0))}")
             if not result_lines:
                 return "Directory is empty. You can write new files to create memory content."
             return "\n".join(result_lines)

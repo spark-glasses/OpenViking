@@ -7,6 +7,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 
+from openviking.session.memory.person_paths import person_anchor_from_uri
 from openviking.session.memory.dataclass import MemoryField
 from openviking.session.memory.email_context_provider import EmailSourceTool
 from openviking.session.memory.memory_type_registry import create_default_registry
@@ -97,7 +98,7 @@ def update_registry():
     registry.load_from_yaml(str(directory / "people.yaml"), replace=True)
     registry.load_from_yaml(str(directory / "questions.yaml"))
     people = registry.get("people")
-    people.filename_template = "{{ anchorId }}.md"
+    people.filename_template = "{{ anchorId }}/memory.md"
     people.fields.append(
         MemoryField(
             name="anchorId",
@@ -402,10 +403,10 @@ Questions use structured proposals and original sourceRefs; read the subject's q
             ) from error
         if (
             kind == "person"
-            and uri.startswith(self.root_uri + "people/")
+            and person_anchor_from_uri(uri, self.root_uri) is not None
             and (uri in self._known_people or uri in self._fully_read)
         ):
-            identifier = self._known_people.get(uri) or uri.rsplit("/", 1)[-1][:-3]
+            identifier = self._known_people.get(uri) or person_anchor_from_uri(uri, self.root_uri)
         elif (
             kind == "matter"
             and uri in self._fully_read
@@ -450,11 +451,10 @@ Questions use structured proposals and original sourceRefs; read the subject's q
                     raise ValueError("New people require a confirmed target anchor")
                 if op.memory_type == "people":
                     if (
-                        not uri.startswith(self.root_uri + "people/")
-                        or "/" in uri[len(self.root_uri + "people/") :]
+                        person_anchor_from_uri(uri, self.root_uri) is None
                     ):
                         raise ValueError("Person operation outside people directory")
-                    anchor = self._known_people.get(uri) or uri.rsplit("/", 1)[-1][:-3]
+                    anchor = self._known_people.get(uri) or person_anchor_from_uri(uri, self.root_uri)
                     if op.memory_fields.get("anchorId") not in (None, anchor):
                         raise ValueError("Person anchorId conflicts with its stable memory URI")
                     op.memory_fields["anchorId"] = anchor

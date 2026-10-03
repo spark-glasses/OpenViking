@@ -6,7 +6,7 @@ description: |
   promote a pending identity to confirmed, merge identities, or select an ambiguous same-name candidate. People identity
   fields are managed by the application; preserve them and update supported narrative.
 directory: "viking://user/{{ user_space }}/memories/people"
-filename_template: "{{ anchorId }}.md"
+filename_template: "{{ anchorId }}/memory.md"
 enabled: true
 embedding_template: "{{ content }}"
 fields:

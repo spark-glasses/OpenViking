@@ -696,12 +696,13 @@ class MemoryUpdater:
             result.add_written(uri)
             updater = cls(registry=create_default_registry(), vikingdb=vikingdb)
             updater._viking_fs = viking_fs
+            updater.strict_merge_errors = True
             attempted = await updater._vectorize_memories(
                 result,
                 ctx,
                 uri_memory_type_map={uri: memory_type} if memory_type else {},
             )
-            return attempted > 0
+            return attempted > 0 and not result.errors
         except Exception:
             logger.warning("Failed to refresh memory embedding for %s", uri, exc_info=True)
             return False

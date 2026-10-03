@@ -109,7 +109,7 @@ class CanonicalPeople:
             for uri in operation.uris:
                 in_people = uri.startswith(root_uri + "people/")
                 if operation.memory_type == "people" or in_people:
-                    match = re.fullmatch(re.escape(root_uri) + r"people/([A-Za-z0-9_-]+)\.md", uri)
+                    match = re.fullmatch(re.escape(root_uri) + r"people/([A-Za-z0-9_-]+)/memory\.md", uri)
                     if not match or operation.memory_type != "people":
                         raise ValueError(
                             "Person writes require memory_type=people and a canonical person URI"

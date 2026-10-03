@@ -8,6 +8,7 @@ import hashlib
 import json
 from uuid import UUID
 from datetime import datetime, timezone
+from openviking.session.memory.person_paths import person_anchor_from_uri
 from openviking.session.memory.person_identity import load_person_identity, memory_root
 from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
 from openviking_cli.exceptions import NotFoundError
@@ -33,9 +34,9 @@ async def collect_profile_proposals(fs, ctx, result, provider, archive_uri):
         if call.get("tool") in ("readEmail", "readTranscript", "readSource", "readContext"):
             evidence += "\n" + json.dumps(call.get("result"), ensure_ascii=False)
     for uri in set(result.written_uris + result.edited_uris):
-        if not uri.startswith(memory_root(ctx) + "people/") or not uri.endswith(".md"):
+        if person_anchor_from_uri(uri, memory_root(ctx)) is None:
             continue
-        anchor = uri.rsplit("/", 1)[-1][:-3]
+        anchor = person_anchor_from_uri(uri, memory_root(ctx))
         try:
             UUID(anchor)
         except ValueError:

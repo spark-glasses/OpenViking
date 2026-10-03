@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from openviking.session.memory.person_paths import person_anchor_from_uri
 from openviking.core.namespace import user_space_fragment
 
 MEETING_MEMORY_TYPES = frozenset({"people", "meetings", "entities", "events", "questions"})
@@ -90,7 +91,7 @@ class MeetingContext(BaseModel):
         if len({p.anchorId for p in self.people}) != len(self.people):
             raise ValueError("Duplicate person anchors")
         for person in self.people:
-            if person.personMemoryUri != root + f"people/{person.anchorId}.md":
+            if person.personMemoryUri != root + f"people/{person.anchorId}/memory.md":
                 raise ValueError("Person URI must identify this user's fixed person anchor")
         for assignment in self.confirmedAssignments:
             if (
@@ -101,10 +102,7 @@ class MeetingContext(BaseModel):
                 raise ValueError("Confirmed assignments must retain their exact source version")
             uri = assignment.get("personMemoryUri")
             if uri is not None and (
-                not uri.startswith(root + "people/")
-                or "/" in uri[len(root + "people/") :]
-                or not uri.endswith(".md")
-                or any(c in uri for c in "%?#\\")
+                person_anchor_from_uri(uri, root) is None
             ):
                 raise ValueError("Confirmed speaker target must be a same-user person")
             if not any(

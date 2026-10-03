@@ -25,7 +25,7 @@ class EmailContext(BaseModel):
 
     def validate_owner(self, ctx) -> None:
         anchor = self.anchorId or self.personId
-        expected = f"viking://user/{user_space_fragment(ctx)}/memories/people/{anchor}.md"
+        expected = f"viking://user/{user_space_fragment(ctx)}/memories/people/{anchor}/memory.md"
         if self.personMemoryUri != expected:
             raise ValueError("personMemoryUri must identify this user's stable person anchor")
         if any(len(address) > 320 or "@" not in address for address in self.emails):

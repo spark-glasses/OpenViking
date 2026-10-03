@@ -277,8 +277,8 @@ class OpenVikingService:
         """Get DebugService instance."""
         return self._debug_service
 
-    async def initialize(self) -> None:
-        """Initialize OpenViking storage and indexes."""
+    async def initialize(self, *, start_background_workers: bool = True) -> None:
+        """Initialize storage; offline maintenance can leave queue/watch writers stopped."""
         if self._initialized:
             logger.debug("Already initialized")
             return
@@ -334,7 +334,7 @@ class OpenVikingService:
         # Doing it here (rather than in _init_storage) ensures that any tasks
         # recovered from a previous crash are not processed before VikingFS is
         # initialized, which would cause "VikingFS not initialized" errors.
-        if self._queue_manager:
+        if self._queue_manager and start_background_workers:
             self._queue_manager.start()
             logger.info("QueueManager workers started")
 
@@ -377,8 +377,9 @@ class OpenVikingService:
             resource_service=self._resource_service,
             viking_fs=self._viking_fs,
         )
-        await self._watch_scheduler.start()
-        logger.info("WatchScheduler started")
+        if start_background_workers:
+            await self._watch_scheduler.start()
+            logger.info("WatchScheduler started")
 
         # Wire up sub-services
         self._fs_service.set_dependencies(

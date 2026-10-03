@@ -134,3 +134,14 @@ async def profile_receipt(body: ProfileReceipt, ctx: RequestContext = Depends(ge
     await service.viking_fs.write_file(receipt, json.dumps(record, ensure_ascii=False), ctx=ctx)
     await service.viking_fs.rm(uri, ctx=ctx)
     return Response(status="ok", result={"status": body.outcome})
+
+
+@router.get("/directory")
+async def person_directory(ctx: RequestContext = Depends(get_request_context)):
+    from openviking.session.memory.person_identity import load_identity_directory
+
+    directory = await load_identity_directory(get_service().viking_fs, ctx)
+    return Response(status="ok", result={"people": [
+        {"anchorId": p["anchorId"], "displayName": p["displayName"], "deleted": p["deleted"]}
+        for p in directory["people"].values()
+    ]})

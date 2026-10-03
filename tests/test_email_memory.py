@@ -24,7 +24,7 @@ from openviking_cli.utils.config.memory_config import MemoryConfig
 
 INITIAL_REF = "email:00000000-0000-4000-8000-000000000001"
 HISTORY_REF = "email:00000000-0000-4000-8000-000000000002"
-PERSON = "viking://user/alice/memories/people/stable-person.md"
+PERSON = "viking://user/alice/memories/people/stable-person/memory.md"
 ARCHIVE = "viking://user/alice/sessions/email-batch/history/archive_001"
 
 
@@ -143,7 +143,7 @@ def test_email_config_round_trip_and_hard_limits(setup):
     with pytest.raises(ValueError):
         setup.provider(maxSourceChars=200001)
     with pytest.raises(ValueError):
-        setup.provider(personMemoryUri="viking://user/bob/memories/people/stable-person.md")
+        setup.provider(personMemoryUri="viking://user/bob/memories/people/stable-person/memory.md")
     with pytest.raises(ValueError):
         setup.provider(anchorId="../another")
 
@@ -151,7 +151,7 @@ def test_email_config_round_trip_and_hard_limits(setup):
 def test_email_scope_and_anchor_stay_stable_with_shared_people_schema(setup):
     assert "people" in MemoryTypeRegistry().list_names()
     provider = setup.provider(personId="replacement-contact")
-    assert provider._get_registry().get("people").filename_template == "stable-person.md"
+    assert provider._get_registry().get("people").filename_template == "stable-person/memory.md"
     assert set(provider.get_tools()) == {"read", "search", "searchEmails", "readEmail"}
     assert {s.memory_type for s in provider.get_memory_schemas(setup.ctx)} == {
         "people",
@@ -631,6 +631,7 @@ async def test_email_merge_failures_are_not_reported_as_success(setup, monkeypat
             "people": [
                 {
                     "page_id": 1,
+                    "anchorId": "stable-person",
                     "content": {
                         "blocks": [
                             {"search": "a nonexistent unique fragment", "replace": "overwritten"}

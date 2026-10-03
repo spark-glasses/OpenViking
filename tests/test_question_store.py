@@ -27,11 +27,10 @@ class FS:
         self.files[uri] = content
 
     async def ls(self, uri, **kwargs):
-        return [
-            {"uri": key}
-            for key in self.files
-            if key.startswith(uri + "/") and "/" not in key[len(uri) + 1 :]
-        ]
+        # Match VikingFS: immediate directories are listed as well as files.
+        children = {uri + "/" + key[len(uri) + 1:].split("/", 1)[0]
+                    for key in self.files if key.startswith(uri + "/")}
+        return [{"uri": key, "isDir": key not in self.files} for key in sorted(children)]
 
     async def rm(self, uri, **kwargs):
         self.files.pop(uri, None)

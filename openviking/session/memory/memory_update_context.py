@@ -66,7 +66,7 @@ class MemoryUpdateContext(StrictModel):
         root = memory_root(ctx)
         for target in self.targets:
             check_memory_uri(target.memoryUri, root)
-            if target.kind == "person" and target.memoryUri != f"{root}people/{target.anchorId}.md":
+            if target.kind == "person" and target.memoryUri != f"{root}people/{target.anchorId}/memory.md":
                 raise ValueError("Person target must use its resolved stable anchor")
         for message in self.messages:
             if message.sourceRef and not re.fullmatch(

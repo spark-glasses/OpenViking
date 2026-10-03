@@ -14,7 +14,7 @@ def answer_registry(subject):
         str(Path(__file__).parents[2] / "prompts/templates/memory/email/people.yaml"), replace=True
     )
     registry.get("people").filename_template = (
-        (subject["id"] + ".md") if subject["kind"] == "person" else "person.md"
+        (subject["id"] + "/memory.md") if subject["kind"] == "person" else "person.md"
     )
     return registry
 

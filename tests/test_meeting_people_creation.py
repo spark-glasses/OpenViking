@@ -175,7 +175,7 @@ async def test_missing_candidate_cannot_be_written_without_validated_attribution
 @pytest.mark.asyncio
 async def test_missing_unknown_anchor_cannot_be_created_from_name_or_known_person_assignment(setup):
     provider = setup.provider()
-    unknown = ROOT + "people/not-a-contact.md"
+    unknown = ROOT + "people/not-a-contact/memory.md"
     value = await provider._execute("read", {"uri": unknown})
     assert not value.get("canCreate")
     unknown_proposal = proposal(

@@ -32,7 +32,7 @@ def person(number, display, **profile):
     return {
         "personId": f"contact-{number}",
         "anchorId": anchor,
-        "memoryUri": ROOT + f"people/{anchor}.md",
+        "memoryUri": ROOT + f"people/{anchor}/memory.md",
         "revision": 1,
         "displayName": display,
         "aliases": person_aliases(profile),
@@ -61,6 +61,9 @@ class FS:
 
     async def ls(self, uri, **kwargs):
         return []
+
+    async def tree(self, uri, **kwargs):
+        return [{"uri": key} for key in self.files if key.startswith(uri + "/")]
 
 
 @pytest.fixture
@@ -162,7 +165,7 @@ async def test_casual_conversation_discovers_people_without_save_memory_or_embed
     assert {p["memoryUri"] for p in env.people[:2]} <= reads
     assert env.people[2]["memoryUri"] not in reads
     assert set(provider.get_tools()) == {"read", "search"}
-    assert MemoryTypeRegistry().get("people").filename_template == "{{ anchorId }}.md"
+    assert MemoryTypeRegistry().get("people").filename_template == "{{ anchorId }}/memory.md"
 
 
 @pytest.mark.asyncio
@@ -264,11 +267,11 @@ async def test_ambiguous_person_is_not_selected_even_if_model_reads_one_candidat
 @pytest.mark.parametrize(
     "kind,uri,fields",
     [
-        ("people", ROOT + "people/invented.md", {}),
-        ("people", "viking://user/other/memories/people/other.md", {}),
+        ("people", ROOT + "people/invented/memory.md", {}),
+        ("people", "viking://user/other/memories/people/other/memory.md", {}),
         ("people", ROOT + "people/../entities/person.md", {}),
-        ("entities", ROOT + "people/00000000-0000-0000-0000-000000000001.md", {}),
-        ("people", ROOT + "people/00000000-0000-0000-0000-000000000001.md", {"anchorId": "wrong"}),
+        ("entities", ROOT + "people/00000000-0000-0000-0000-000000000001/memory.md", {}),
+        ("people", ROOT + "people/00000000-0000-0000-0000-000000000001/memory.md", {"anchorId": "wrong"}),
     ],
 )
 async def test_invalid_or_invented_anchor_cannot_be_written(env, kind, uri, fields):

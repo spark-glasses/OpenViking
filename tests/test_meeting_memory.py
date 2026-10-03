@@ -24,7 +24,7 @@ MID = "00000000-0000-4000-8000-000000000099"
 REF = f"transcript:{MID}"
 VERSION = "sha256:" + "a" * 64
 ROOT = "viking://user/alice/memories/"
-PERSON = ROOT + "people/ethan.md"
+PERSON = ROOT + "people/ethan/memory.md"
 MEETING = ROOT + f"events/meetings/{MID}.md"
 ARCHIVE = "viking://user/alice/sessions/meeting-job/history/archive_001"
 SPEAKER = MID + ":" + VERSION + ":SPEAKER_00"
@@ -373,7 +373,7 @@ async def test_user_confirmation_preserves_frozen_scope_and_rejects_cross_user(s
         "conversationId": "chat",
         "messageId": "answer",
         "confirmedSpeakerAssignment": {
-            "personMemoryUri": "viking://user/bob/memories/people/ethan.md"
+            "personMemoryUri": "viking://user/bob/memories/people/ethan/memory.md"
         },
     }
     with pytest.raises(InvalidArgumentError):

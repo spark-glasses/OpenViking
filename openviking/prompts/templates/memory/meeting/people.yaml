@@ -9,7 +9,7 @@ description: |
   confirmations authorize person writes; retain their exact source and window.
   Preserve prior knowledge when updating an existing document.
 directory: "viking://user/{{ user_space }}/memories/people"
-filename_template: "{{ anchorId }}.md"
+filename_template: "{{ anchorId }}/memory.md"
 enabled: true
 embedding_template: "{{ content }}"
 fields:

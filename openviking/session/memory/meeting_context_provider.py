@@ -10,6 +10,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 
+from openviking.session.memory.person_paths import person_anchor_from_uri
 from openviking.core.namespace import user_space_fragment
 from openviking.session.memory.email_context_provider import EmailSourceTool
 from openviking.session.memory.meeting_context import MEETING_MEMORY_TYPES, MeetingContext
@@ -697,7 +698,7 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
             if target:
                 self._check_uri(target)
                 if not re.fullmatch(
-                    re.escape(self.root_uri) + r"people/[A-Za-z0-9_-]+\.md", target
+                    re.escape(self.root_uri) + r"people/[A-Za-z0-9_-]+/memory\.md", target
                 ):
                     raise ValueError("Speaker identity target must be a person document")
                 if target not in self._fully_read and target not in self._missing_uris:
@@ -851,10 +852,9 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
             raise ValueError("Question subject must be fully read")
         if (
             kind == "person"
-            and uri.startswith(self.root_uri + "people/")
-            and "/" not in uri[len(self.root_uri + "people/") :]
+            and person_anchor_from_uri(uri, self.root_uri) is not None
         ):
-            return {"kind": "person", "id": uri.rsplit("/", 1)[-1][:-3], "memoryUri": uri}
+            return {"kind": "person", "id": person_anchor_from_uri(uri, self.root_uri), "memoryUri": uri}
         if (
             kind == "matter"
             and any(
@@ -913,7 +913,7 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
                 if op.memory_type == "meetings" and uri != self.spec.meetingMemoryUri:
                     raise ValueError("Meeting update targets another recording")
                 if op.memory_type == "people" and (
-                    not re.fullmatch(re.escape(self.root_uri) + r"people/[A-Za-z0-9_-]+\.md", uri)
+                    not re.fullmatch(re.escape(self.root_uri) + r"people/[A-Za-z0-9_-]+/memory\.md", uri)
                     or uri not in assigned
                     or (uri not in allowed_people and uri not in self._fully_read)
                 ):

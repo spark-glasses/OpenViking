@@ -20,7 +20,7 @@ from openviking_cli.exceptions import AlreadyExistsError, InvalidArgumentError, 
 from openviking_cli.session.user_id import UserIdentifier
 from openviking_cli.utils.config.memory_config import MemoryConfig
 
-PERSON = "viking://user/alice/memories/people/bob-anchor.md"
+PERSON = "viking://user/alice/memories/people/bob-anchor/memory.md"
 ARCHIVE = "viking://user/alice/sessions/memory-update-op-1/history/archive_001"
 REF = "conversation:chat-1/message:user-1"
 EMAIL = "email:00000000-0000-4000-8000-000000000001"
@@ -653,7 +653,11 @@ async def test_contact_full_profile_read_is_scoped_and_preserves_line_pagination
     assert "original full notes" in result["content"]
     assert '"profile"' not in result["content"]
     assert uri not in provider._fully_read
-    for forbidden in (uri.replace("alice", "other"), uri.replace(".contacts/", ".contacts/../"), uri.replace("11111111-1111-4111-8111-111111111111", "directory")):
+    for forbidden in (
+        uri.replace("alice", "other"),
+        uri.replace("/profile.json", "/../profile.json"),
+        uri.replace("11111111-1111-4111-8111-111111111111", "directory"),
+    ):
         with pytest.raises(ValueError):
             await provider.execute_tool(ToolCall("invalid", "read", {"uri": forbidden}))
 

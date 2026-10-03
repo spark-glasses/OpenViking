@@ -312,10 +312,11 @@ class QuestionStore:
         return page
 
     async def _pages(self):
-        # No persistent global index. The native tree is bounded to these three levels.
+        # New person directories add several nodes per person. A global node
+        # cap can silently hide questions for later people; bound depth, not count.
         root = memory_root(self.ctx).rstrip("/")
         try:
-            entries = await self.fs.tree(root, ctx=self.ctx, node_limit=10000, level_limit=4)
+            entries = await self.fs.tree(root, ctx=self.ctx, node_limit=None, level_limit=4)
         except NotFoundError:
             return []
         pages = []
@@ -729,7 +730,7 @@ class QuestionStore:
                     raise InvalidArgumentError("Self mapping cannot identify another person")
                 if not is_self:
                     if not isinstance(uri, str) or not re.fullmatch(
-                        re.escape(memory_root(self.ctx)) + r"people/[A-Za-z0-9_-]+\.md", uri
+                        re.escape(memory_root(self.ctx)) + r"people/[A-Za-z0-9_-]+/memory\.md", uri
                     ):
                         raise InvalidArgumentError(
                             "Speaker confirmation requires an existing same-user person or frozen candidate"

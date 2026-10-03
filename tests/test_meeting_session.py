@@ -74,7 +74,7 @@ def setup(monkeypatch):
                     "personId": "contact-1",
                     "anchorId": "anchor-1",
                     "name": "Ethan",
-                    "personMemoryUri": "viking://user/alice/memories/people/anchor-1.md",
+                    "personMemoryUri": "viking://user/alice/memories/people/anchor-1/memory.md",
                 }
             ],
             "mediaWindows": [
@@ -110,7 +110,7 @@ def email_spec():
         "personId": "contact-1",
         "personName": "Ethan",
         "emails": ["ethan@example.test"],
-        "personMemoryUri": "viking://user/alice/memories/people/contact-1.md",
+        "personMemoryUri": "viking://user/alice/memories/people/contact-1/memory.md",
         "sourceRefs": ["email:00000000-0000-4000-8000-000000000002"],
     }
 

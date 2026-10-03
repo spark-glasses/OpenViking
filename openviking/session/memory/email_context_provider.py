@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 
+from openviking.session.memory.person_paths import person_anchor_from_uri
 from openviking.core.namespace import user_space_fragment
 from openviking.session.memory.email_context import EMAIL_MEMORY_TYPES, EmailContext
 from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
@@ -99,7 +100,7 @@ def create_email_registry(spec: EmailContext) -> MemoryTypeRegistry:
         schema = registry.get(name)
         if schema is None:
             raise RuntimeError(f"Missing email memory schema: {name}")
-        schema.filename_template = f"{anchor}.md"
+        schema.filename_template = f"{anchor}/memory.md"
     # Email processing updates known matters without generating one event per email.
     for name in ("entities", "events"):
         schema = registry.get(name)
@@ -371,12 +372,10 @@ Apply only justified changes:
             if memory_uri == self.spec.personMemoryUri:
                 identifier = self.spec.anchorId or self.spec.personId
             elif (
-                memory_uri.startswith(self.root_uri + "people/")
-                and memory_uri.endswith(".md")
-                and "/" not in memory_uri[len(self.root_uri + "people/") :]
+                person_anchor_from_uri(memory_uri, self.root_uri) is not None
                 and memory_uri in self._fully_read
             ):
-                identifier = memory_uri.rsplit("/", 1)[-1][:-3]
+                identifier = person_anchor_from_uri(memory_uri, self.root_uri)
             else:
                 raise ValueError(
                     "Person questions require the confirmed anchor or an existing fully read person"

@@ -13,6 +13,7 @@ import unicodedata
 from uuid import UUID
 
 from openviking.session.memory.question_store import memory_root
+from openviking.session.memory.person_paths import person_anchor_from_uri
 from openviking_cli.exceptions import InvalidArgumentError, NotFoundError
 
 CONTACT_SECTION_START = "<!-- SPARK_CONTACT_PROFILE_START -->"
@@ -61,19 +62,19 @@ def person_aliases(profile):
 
 
 def person_memory_uri(ctx, anchor_id):
-    return memory_root(ctx) + "people/" + str(UUID(str(anchor_id))) + ".md"
+    return memory_root(ctx) + "people/" + str(UUID(str(anchor_id))) + "/memory.md"
 
 
 def identity_root(ctx):
-    return memory_root(ctx) + "people/.contacts/"
+    return memory_root(ctx) + "people/"
 
 
 def identity_uri(ctx, anchor_id):
-    return identity_root(ctx) + str(UUID(str(anchor_id))) + ".json"
+    return identity_root(ctx) + str(UUID(str(anchor_id))) + "/profile.json"
 
 
 def identity_directory_uri(ctx):
-    return identity_root(ctx) + "directory.json"
+    return identity_root(ctx) + ".directory.json"
 
 
 def _validate_owner(record, ctx):
@@ -175,7 +176,7 @@ def model_contact_profile(identity):
     if truncated:
         profile["projectionTruncated"] = truncated
     profile["fullProfileUri"] = (
-        identity["memoryUri"].rsplit("/", 1)[0] + "/.contacts/" + identity["anchorId"] + ".json"
+        identity["memoryUri"].rsplit("/", 1)[0] + "/profile.json"
     )
     return profile
 
@@ -185,7 +186,7 @@ def is_person_identity_uri(uri, ctx):
         return False
     name = uri[len(identity_root(ctx)) :]
     try:
-        return name.endswith(".json") and name == str(UUID(name[:-5])) + ".json"
+        return name.endswith("/profile.json") and name == str(UUID(name.removesuffix("/profile.json"))) + "/profile.json"
     except ValueError:
         return False
 
@@ -276,10 +277,9 @@ def apply_person_identity(memory, identity):
 
 async def preserve_person_identity(viking_fs, ctx, uri, memory):
     """Native updater hook. Registered contact metadata is never model writable."""
-    prefix = memory_root(ctx) + "people/"
-    if not uri.startswith(prefix) or "/" in uri[len(prefix) :] or not uri.endswith(".md"):
+    anchor = person_anchor_from_uri(uri, memory_root(ctx))
+    if anchor is None:
         return memory
-    anchor = uri[len(prefix) : -3]
     try:
         UUID(anchor)
     except ValueError:
