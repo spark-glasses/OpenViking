@@ -11,7 +11,7 @@ from openviking.server.auth import get_request_context
 from openviking.server.dependencies import get_service
 from openviking.server.identity import RequestContext
 from openviking.server.models import Response
-from openviking.session.memory.question_store import QuestionStore
+from openviking.session.memory.question_store import QuestionStore, question_uri
 
 router = APIRouter(prefix="/api/v1/questions", tags=["questions"])
 
@@ -94,6 +94,38 @@ async def pending_propagation(ctx: RequestContext = Depends(get_request_context)
 async def record(body: RecordRequest, ctx: RequestContext = Depends(get_request_context)):
     result = await store(ctx).record(body.model_dump(mode="json", exclude_none=True))
     return Response(status="ok", result=result)
+
+
+class EmailIdentityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    clusterId: UUID
+    addresses: list[str] = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=800)
+    sourceRefs: list[str] = Field(min_length=1, max_length=20)
+
+
+@router.post("/email-identity")
+async def discover_email_identity(body: EmailIdentityRequest, ctx: RequestContext = Depends(get_request_context)):
+    # Authenticated Spark ingestion owns source access/validation. This endpoint
+    # only writes an uncertain self-owned question, never a People identity.
+    from openviking_cli.exceptions import InvalidArgumentError
+    try:
+        for ref in body.sourceRefs:
+            if not ref.startswith("email:") or str(UUID(ref[6:])) != ref[6:]:
+                raise ValueError("invalid email reference")
+    except ValueError as error:
+        raise InvalidArgumentError("Email identity evidence must use persistent email references") from error
+    subject = {"kind": "self", "id": "self"}
+    topic = "email-identity:" + str(body.clusterId)
+    records = await store(ctx).discover(question_uri(ctx, subject), subject, [{
+        "topicKey": topic,
+        "text": f"You have exchanged emails with {body.description}. Who is this person?",
+        "sourceRefs": body.sourceRefs,
+        "purpose": "emailIdentity",
+        "scope": {"kind": "emailIdentity", "clusterId": str(body.clusterId), "addresses": body.addresses},
+        "ownershipUncertain": True,
+    }])
+    return Response(status="ok", result={"question": next(q for q in records if q["topicKey"] == topic)})
 
 
 @router.get("/{question_id}")
