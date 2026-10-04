@@ -7,6 +7,7 @@ Session Extract Context Provider - 会话提取 Provider 实现
 """
 
 import json
+import hashlib
 import os
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -33,6 +34,7 @@ from openviking.session.memory.memory_type_registry import (
     resolve_memory_templates_dir,
 )
 from openviking.session.memory.person_identity import load_active_people
+from openviking.session.memory import project_tools as _project_tools  # registers shared tools
 from openviking.session.memory.tools import (
     add_tool_call_pair_to_messages,
     get_tool,
@@ -177,6 +179,12 @@ class SessionExtractContextProvider(ExtractContextProvider):
         # rules. Ordinary extraction can only extend an existing person page.
         unambiguous = self._canonical_people.unambiguous(self._person_source_text())
         for operation in operations.upsert_operations:
+            if operation.memory_type == "projects":
+                from openviking.session.memory.project_store import project_uri
+                uri = project_uri(self._ctx, operation.memory_fields.get("projectId"))
+                if operation.uris != [uri] or uri not in self.read_file_contents:
+                    raise ValueError("Project updates require a fully read canonical Project")
+                operation.old_memory_file_content = self.read_file_contents[uri]
             if operation.memory_type != "people":
                 continue
             for uri in operation.uris:
@@ -700,6 +708,17 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
         self,
         tool_call,
     ) -> Any:
+        if tool_call.name in ("listProjects", "ensureProject"):
+            from openviking.session.memory.project_store import ProjectStore
+            store = ProjectStore(self._viking_fs, self._ctx)
+            args = tool_call.arguments
+            if tool_call.name == "listProjects":
+                return await store.list(args.get("cursor"), args.get("limit", 50))
+            # Replaying this extraction yields the same anchor. A different
+            # conversation can create a distinct, same-named undertaking.
+            identity = json.dumps([getattr(m, "id", None) for m in self.messages or []])
+            key = hashlib.sha256(identity.encode()).hexdigest() + ":" + args["name"].casefold()
+            return await store.ensure(name=args["name"], create_key=key)
         tool = get_tool(tool_call.name)
         if not tool:
             return {"error": f"Unknown tool: {tool_call.name}"}
@@ -716,8 +735,24 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
             return result
         return await tool.execute(self.create_tool_context(), **tool_call.arguments)
 
+    def get_memory_write_context(self):
+        from openviking.session.memory.memory_write_context import MemoryWriteContext
+        if not hasattr(self, "_memory_write_context"):
+            self._memory_write_context = MemoryWriteContext(self._viking_fs, self._ctx, self.read_file_contents)
+            self._memory_write_context.add_messages(self.messages, source_only=getattr(self, "resolution_kind", None) == "sourceEvidence")
+        self._memory_write_context.read_files = self.read_file_contents
+        return self._memory_write_context
+
+    def register_memory_read(self, uri, page):
+        self.read_file_contents[uri] = page
+        if hasattr(self, "_fully_read"):
+            self._fully_read.add(uri)
+        self.get_memory_write_context().read_files[uri] = page
+
     def get_tools(self) -> List[str]:
         """获取可用的工具列表"""
+        if self._ctx and any(s.memory_type == "projects" for s in self.get_memory_schemas(self._ctx)):
+            return ["read", "search", "listProjects", "ensureProject"]
         if self._canonical_people.records:
             # Exact identity prefetch is bounded, so other relevant people must
             # remain discoverable on demand even with eager semantic prefetch.

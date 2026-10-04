@@ -107,6 +107,10 @@ class CanonicalPeople:
         """Common guard; task providers still apply their narrower permissions."""
         for operation in operations.upsert_operations:
             for uri in operation.uris:
+                # Questions have their own ownership/evidence validation. Sharing
+                # a person's directory does not make them a narrative patch.
+                if operation.memory_type == "questions" and uri == root_uri + "people/" + str(operation.memory_fields.get("question_subject", {}).get("id", "")) + "/questions.md":
+                    continue
                 in_people = uri.startswith(root_uri + "people/")
                 if operation.memory_type == "people" or in_people:
                     match = re.fullmatch(re.escape(root_uri) + r"people/([A-Za-z0-9_-]+)/memory\.md", uri)

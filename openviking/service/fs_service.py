@@ -419,7 +419,19 @@ class FSService:
         """Read file content."""
         viking_fs = self._ensure_initialized()
         uri = validate_viking_uri(uri)
-        content = await viking_fs.read_file(uri, ctx=ctx)
+        from openviking.session.memory.project_paths import project_id_from_uri
+        from openviking.session.memory.project_store import ProjectStore
+        from openviking.session.memory.question_store import memory_root
+        from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+        project_id = project_id_from_uri(uri, memory_root(ctx))
+        if project_id:
+            content = MemoryFileUtils.write(await ProjectStore(viking_fs, ctx, self._vikingdb).get(project_id))
+        elif uri.endswith("/project.json") and (project_id := project_id_from_uri(uri.removesuffix("project.json") + "memory.md", memory_root(ctx))):
+            import json
+            page = await ProjectStore(viking_fs, ctx, self._vikingdb).get(project_id)
+            content = json.dumps(page.extra_fields, ensure_ascii=False, indent=2)
+        else:
+            content = await viking_fs.read_file(uri, ctx=ctx)
         skill_name = get_skill_name_from_uri(uri)
         if skill_name and self._privacy_config_service:
             current = await self._privacy_config_service.get_current(

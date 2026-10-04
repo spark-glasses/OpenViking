@@ -60,7 +60,8 @@ async def person_operation(
 
 
 from openviking.session.memory.people_profile_proposals import pending, queue_root, receipt_uri
-from openviking.session.memory.question_store import QuestionStore, question_uri
+from openviking.session.memory.question_service import QuestionService
+from openviking.session.memory.memory_write_context import MemoryWriteContext
 import json
 import hashlib
 from openviking_cli.exceptions import NotFoundError
@@ -100,10 +101,8 @@ async def profile_receipt(body: ProfileReceipt, ctx: RequestContext = Depends(ge
         subject = {"kind": "person", "id": record["anchorId"], "memoryUri": record["memoryUri"]}
         # Stable per-observation topic preserves a denial instead of re-asking
         # every time an unchanged document is projected back to the model.
-        await QuestionStore(service.viking_fs, ctx, service.vikingdb_manager).discover(
-            question_uri(ctx, subject),
+        await QuestionService(MemoryWriteContext(service.viking_fs, ctx), service.vikingdb_manager).discover_business_event(
             subject,
-            [
                 {
                     "topicKey": "profile-"
                     + hashlib.sha256(
@@ -119,6 +118,11 @@ async def profile_receipt(body: ProfileReceipt, ctx: RequestContext = Depends(ge
                     ).hexdigest(),
                     "text": f"You previously set {record['field']} to {(body.currentValue or '(empty)')[:220]}. A new source says {record['value'][:220]}. Should I update it?",
                     "sourceRefs": record["sourceRefs"],
+                    "context": {"summary": "New evidence conflicts with a user-maintained profile field.",
+                                "uncertainty": "Should the user's value be updated?",
+                                "knownFacts": [f"User value: {body.currentValue}", f"Source proposal: {record['value']}"],
+                                "candidates": []},
+                    "importance": {"level": "later", "reason": "Preserve user correction until explicitly approved"},
                     "purpose": "profileCorrection",
                     "scope": {
                         "kind": "profileCorrection",
@@ -127,8 +131,9 @@ async def profile_receipt(body: ProfileReceipt, ctx: RequestContext = Depends(ge
                         "proposedValue": record["value"],
                         "previousValue": body.currentValue,
                     },
-                }
-            ],
+                },
+            event_ref="profile-proposal:" + body.id,
+            event={"proposal": record, "currentValue": body.currentValue},
         )
     record["status"] = body.outcome
     await service.viking_fs.write_file(receipt, json.dumps(record, ensure_ascii=False), ctx=ctx)

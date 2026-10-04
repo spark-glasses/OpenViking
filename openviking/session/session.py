@@ -2132,6 +2132,49 @@ class Session:
             "task_id": task.task_id,
         }
 
+    async def retry_question_archive(self, archive_id: str) -> Dict[str, Any]:
+        """Recover the existing answer archive, never append the answer twice."""
+        from openviking.service.task_tracker import get_task_tracker
+        from openviking_cli.exceptions import InvalidArgumentError, NotFoundError
+
+        if not self._meta.question_context or not re.fullmatch(r"archive_[0-9]+", archive_id):
+            raise InvalidArgumentError("Invalid question archive")
+        uri = f"{self._session_uri}/history/{archive_id}"
+        try:
+            await self._viking_fs.read_file(uri + "/.done", ctx=self.ctx)
+            return {"session_id": self.session_id, "archive_uri": uri, "status": "completed"}
+        except NotFoundError:
+            pass
+        orphan = False
+        try:
+            await self._viking_fs.read_file(uri + "/.failed.json", ctx=self.ctx)
+        except NotFoundError:
+            orphan = True
+            try:
+                committed = datetime.fromisoformat(self._meta.last_commit_at.replace("Z", "+00:00"))
+                if committed.tzinfo is None:
+                    committed = committed.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - committed).total_seconds()
+            except (ValueError, TypeError, AttributeError):
+                raise InvalidArgumentError("Question archive has no valid commit timestamp") from None
+            if self._archive_index_from_uri(uri) != self._meta.commit_count or age < 60:
+                raise InvalidArgumentError("Question archive is not eligible for orphan recovery")
+        messages = await self._read_archive_messages(uri)
+        if not messages:
+            raise InvalidArgumentError("Question archive has no readable messages")
+        task = await get_task_tracker().create_if_no_running(
+            "session_commit", self.session_id, account_id=self.ctx.account_id,
+            user_id=self.ctx.user.user_id, require_no_existing=orphan,
+        )
+        if task is None:
+            raise InvalidArgumentError("An extraction task already exists for this session")
+        asyncio.create_task(self._run_memory_extraction(
+            task_id=task.task_id, archive_uri=uri, messages=messages, usage_records=[],
+            first_message_id=messages[0].id, last_message_id=messages[-1].id,
+            memory_policy=self._meta.memory_policy,
+        ))
+        return {"session_id": self.session_id, "archive_uri": uri, "status": "accepted", "task_id": task.task_id}
+
     async def _write_done_file(
         self,
         archive_uri: str,

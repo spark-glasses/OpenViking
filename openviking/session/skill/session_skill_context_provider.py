@@ -86,6 +86,9 @@ def build_skill_read_result(
 class SessionSkillContextProvider(SessionExtractContextProvider):
     """Provider that reuses session ReAct extraction for real skill assets."""
 
+    # Agent skills/trajectory summaries are derived artifacts, not new user evidence.
+    question_writes_enabled = False
+
     def instruction(self) -> str:
         return (
             "You are an extraction agent. Analyze the archived conversation, use read when "

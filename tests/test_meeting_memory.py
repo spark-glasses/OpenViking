@@ -402,6 +402,8 @@ async def test_native_loop_writes_meeting_then_canonical_scoped_question(setup, 
         "topicKey": "speaker",
         "text": "Was that Ethan speaking?",
         "sourceRefs": [REF],
+        "context": {"summary": "A participant discussed the prototype", "uncertainty": "Who was speaking?", "knownFacts": [], "candidates": ["Ethan"]},
+        "evidence": [{"sourceRef": REF, "sourceVersion": VERSION, "quote": "prototype"}],
         "purpose": "speakerIdentity",
         "scope": {"speakerRef": SPEAKER, "startMs": 100, "endMs": 1000},
     }
@@ -426,11 +428,10 @@ async def test_native_loop_writes_meeting_then_canonical_scoped_question(setup, 
             "events": [],
             "questions": [
                 {
-                    "page_id": 101,
                     "subjectKind": "matter",
                     "subjectId": "meeting",
                     "subjectMemoryUri": MEETING,
-                    "entries": json.dumps([entry]),
+                    "entries": [entry],
                 }
             ],
             "delete_uris": [],

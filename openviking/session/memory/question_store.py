@@ -52,8 +52,11 @@ def memory_root(ctx):
 
 def question_uri(ctx, subject):
     kind, identifier = subject.get("kind"), subject.get("id")
-    if kind == "self":
-        return memory_root(ctx) + "self/questions.md"
+    if kind in ("self", "unassigned"):
+        return memory_root(ctx) + kind + "/questions.md"
+    if kind == "project":
+        from openviking.session.memory.project_paths import project_questions_uri
+        return project_questions_uri(ctx, identifier)
     if (
         kind not in ("person", "matter")
         or not isinstance(identifier, str)
@@ -68,9 +71,9 @@ def question_uri(ctx, subject):
 
 def is_question_uri(uri, ctx):
     root = memory_root(ctx)
-    return uri == root + "self/questions.md" or bool(
+    return uri in (root + "self/questions.md", root + "unassigned/questions.md") or bool(
         re.fullmatch(
-            re.escape(root) + r"(?:people|matters)/[A-Za-z0-9_-]{1,160}/questions\.md", uri
+            re.escape(root) + r"(?:people|projects|matters)/[A-Za-z0-9_-]{1,160}/questions\.md", uri
         )
     )
 
@@ -220,6 +223,7 @@ def validate_proposals(raw, allowed_refs):
             "ownershipUncertain",
             "purpose",
             "scope",
+            "action", "expectedRevision", "context", "evidence", "importance", "resolution",
         }:
             raise ValueError(
                 "Invalid question proposal fields; lifecycle and timing are not extraction-controlled"
@@ -235,10 +239,32 @@ def validate_proposals(raw, allowed_refs):
             not isinstance(refs, list)
             or not refs
             or len(refs) > 20
-            or any(ref not in allowed_refs for ref in refs)
+            or any(not isinstance(ref, str) or ref not in allowed_refs for ref in refs)
         ):
-            raise ValueError("Question sourceRefs must reference supplied or read evidence")
+            raise ValueError("Question sourceRefs must be strings referencing supplied or read evidence")
         item = {"topicKey": topic, "text": text.strip(), "sourceRefs": sorted(set(refs))}
+        from openviking.session.memory.question_contract import QuestionContextData, QuestionEvidence, QuestionImportance
+        for name, model in (("context", QuestionContextData), ("importance", QuestionImportance)):
+            if entry.get(name) is not None:
+                item[name] = model.model_validate(entry[name]).model_dump(exclude_none=True)
+        if entry.get("evidence") is not None:
+            if not isinstance(entry["evidence"], list) or len(entry["evidence"]) > 20:
+                raise ValueError("Invalid question evidence")
+            item["evidence"] = [QuestionEvidence.model_validate(e).model_dump(exclude_none=True) for e in entry["evidence"]]
+            if any(e["sourceRef"] not in refs for e in item["evidence"]):
+                raise ValueError("Question evidence must belong to sourceRefs")
+        action = entry.get("action", "discover")
+        if action not in ("discover", "addEvidence", "resolve", "obsolete", "relocate"):
+            raise ValueError("Invalid question operation")
+        item["action"] = action
+        if action != "discover":
+            if not entry.get("questionId") or not isinstance(entry.get("expectedRevision"), int):
+                raise ValueError("Read the existing question revision before changing it")
+            item["expectedRevision"] = entry["expectedRevision"]
+        if action in ("resolve", "obsolete"):
+            if not isinstance(entry.get("resolution"), str) or not entry["resolution"].strip() or not item.get("evidence"):
+                raise ValueError("Question resolution requires answer and evidence")
+            item["resolution"] = entry["resolution"]
         if entry.get("questionId"):
             UUID(entry["questionId"])
             item["questionId"] = entry["questionId"]
@@ -248,6 +274,10 @@ def validate_proposals(raw, allowed_refs):
         item.update(proposal_delivery_metadata(entry))
         normalized.append(item)
     return normalized
+
+
+def source_event_id(question_id, proposal):
+    return str(uuid5(NAMESPACE_URL, "question-source:" + question_id + ":" + json.dumps(proposal, sort_keys=True, ensure_ascii=False)))
 
 
 def render_questions(subject, records):
@@ -265,6 +295,16 @@ def render_questions(subject, records):
         )
         if item.get("purpose"):
             lines.append(f"- Purpose: {item['purpose']}")
+        lines.append(f"- Asking: {item.get('asking', 'allowed')}")
+        if item.get("context"):
+            context = item["context"]
+            lines.extend(["", context["summary"], "", "Uncertainty: " + context["uncertainty"]])
+            lines.extend("- Known: " + fact for fact in context.get("knownFacts", []))
+            lines.extend("- Candidate (unconfirmed): " + value for value in context.get("candidates", []))
+        if item.get("importance"):
+            lines.append("- Importance: " + item["importance"]["level"] + "; " + item["importance"]["reason"])
+        for evidence in item.get("evidence", []):
+            lines.append("- Source quote: " + json.dumps(evidence, ensure_ascii=False))
         if item.get("scope"):
             lines.append("- Scope: " + json.dumps(item["scope"], ensure_ascii=False))
         if item.get("timing"):
@@ -283,7 +323,7 @@ def render_questions(subject, records):
         for event in item.get("events", []):
             lines.extend(
                 [
-                    f"- {event['action']} at {event['at']} ({event['sourceRef']}):",
+                f"- {event['action']} at {event['at']} ({event.get('sourceRef', ', '.join(event.get('sourceRefs', [])))}):",
                     "  " + event["evidenceText"].replace("\n", "\n  "),
                 ]
             )
@@ -307,7 +347,7 @@ class QuestionStore:
         except NotFoundError:
             return None
         page = MemoryFileUtils.read(raw, uri=uri)
-        if page.extra_fields.get("questionFormatVersion") != 1:
+        if page.extra_fields.get("questionFormatVersion") != 2:
             raise InvalidArgumentError("Unsupported question page format")
         return page
 
@@ -360,7 +400,7 @@ class QuestionStore:
                 uri=move["targetUri"],
                 memory_type="questions",
                 extra_fields={
-                    "questionFormatVersion": 1,
+                    "questionFormatVersion": 2,
                     "subject": move["subject"],
                     "questions": [],
                     "revision": 0,
@@ -404,6 +444,34 @@ class QuestionStore:
                 await self.fs.write_file(journal_uri, json.dumps(move, ensure_ascii=False), ctx=self.ctx)
                 await self._finish_move(journal_uri, move)
 
+    async def relocate(self, question_id, expected_revision, subject, evidence):
+        target_uri = question_uri(self.ctx, subject)
+        event_id = str(uuid5(NAMESPACE_URL, "question-move:" + question_id + ":" + json.dumps([subject, evidence], sort_keys=True)))
+        async with owner_lock(self.ctx):
+            source, item = await self._find(question_id)
+            if any(e["eventId"] == event_id for e in item["events"]):
+                return self._public(source, item)
+            if source.extra_fields["revision"] != expected_revision:
+                raise InvalidArgumentError("Question changed; read its current revision before moving")
+            if source.uri == target_uri:
+                return self._public(source, item)
+            target = await self._load_page(target_uri)
+            if target and any(q["topicKey"] == item["topicKey"] for q in target.extra_fields["questions"]):
+                raise InvalidArgumentError("Target already has this topic; review both questions before moving")
+            record = copy.deepcopy(item)
+            record["ownershipUncertain"] = subject["kind"] == "unassigned"
+            record["events"].append({"eventId": event_id, "action": "relocated", "at": now_iso(),
+                "evidenceText": "Question ownership reassigned", "evidence": evidence,
+                "fromSubject": source.extra_fields["subject"], "toSubject": subject})
+            record["updatedAt"] = now_iso()
+            journal_uri = memory_root(self.ctx) + ".question-moves/" + question_id + ".json"
+            move = {"questionId": question_id, "sourceUri": source.uri, "targetUri": target_uri,
+                    "subject": subject, "question": record}
+            await self.fs.write_file(journal_uri, json.dumps(move, ensure_ascii=False), ctx=self.ctx)
+            await self._finish_move(journal_uri, move)
+            page = await self._load_page(target_uri)
+            return self._public(page, next(q for q in page.extra_fields["questions"] if q["questionId"] == question_id))
+
     async def _find(self, question_id):
         UUID(question_id)
         await self._recover_moves()
@@ -441,37 +509,39 @@ class QuestionStore:
                     uri=uri,
                     memory_type="questions",
                     extra_fields={
-                        "questionFormatVersion": 1,
+                        "questionFormatVersion": 2,
                         "subject": subject,
                         "questions": [],
                         "revision": 0,
                     },
                 )
             records = page.extra_fields["questions"]
+            replayed = set()
+            # Validate transitions against the latest revision BEFORE mutating any
+            # records. Old extraction snapshots cannot overwrite a user answer.
+            for p in proposals:
+                if p.get("action", "discover") != "discover":
+                    found = next((q for q in records if q["questionId"] == p.get("questionId")), None)
+                    if found and any(e["eventId"] == source_event_id(found["questionId"], p) for e in found.get("events", [])):
+                        replayed.add(found["questionId"])
+                        continue
+                    if found is None or p.get("expectedRevision") != page.extra_fields.get("revision", 0):
+                        raise InvalidArgumentError("Question changed; read its current revision before editing")
+                    if found["state"] != "open":
+                        raise InvalidArgumentError("Resolved or obsolete questions cannot be changed by source extraction")
+                    if p.get("action") == "resolve" and found.get("purpose") in ("speakerIdentity", "personIdentity", "externalIdentity", "emailIdentity", "profileCorrection"):
+                        raise InvalidArgumentError("This identity/profile question requires explicit user confirmation")
             for proposal in proposals:
                 question_id = proposal.get("questionId")
+                if question_id in replayed:
+                    continue
                 item = (
                     next((q for q in records if q["questionId"] == question_id), None)
                     if question_id
                     else None
                 )
                 if question_id and item is None:
-                    old_page, old_item = await self._find(question_id)
-                    journal_uri = memory_root(self.ctx) + ".question-moves/" + question_id + ".json"
-                    move = {
-                        "questionId": question_id,
-                        "sourceUri": old_page.uri,
-                        "targetUri": uri,
-                        "subject": subject,
-                        "question": old_item,
-                    }
-                    await self.fs.write_file(
-                        journal_uri, json.dumps(move, ensure_ascii=False), ctx=self.ctx
-                    )
-                    await self._finish_move(journal_uri, move)
-                    page = await self._load_page(uri)
-                    records = page.extra_fields["questions"]
-                    item = next(q for q in records if q["questionId"] == question_id)
+                    raise InvalidArgumentError("Question belongs to another subject; use an explicit relocation")
                 if item is None:
                     item = next((q for q in records if q["topicKey"] == proposal["topicKey"]), None)
                 if item is None:
@@ -481,6 +551,7 @@ class QuestionStore:
                         "text": proposal["text"],
                         "sourceRefs": [],
                         "state": "open",
+                        "asking": "allowed",
                         "createdAt": now_iso(),
                         "updatedAt": now_iso(),
                         "events": [],
@@ -505,6 +576,28 @@ class QuestionStore:
                             history.append(item["text"])
                     item["text"] = proposal["text"]
                 item["sourceRefs"] = sorted(set(item["sourceRefs"]) | set(proposal["sourceRefs"]))
+                for field in ("context", "importance"):
+                    if field in proposal and item["state"] == "open":
+                        item[field] = copy.deepcopy(proposal[field])
+                evidence = item.setdefault("evidence", [])
+                for entry in proposal.get("evidence", []):
+                    if entry not in evidence:
+                        evidence.append(copy.deepcopy(entry))
+                action = proposal.get("action", "discover")
+                if action != "discover":
+                    event_id = source_event_id(item["questionId"], proposal)
+                    event = {"eventId": event_id, "action": action, "at": now_iso(),
+                             "sourceRefs": proposal["sourceRefs"], "evidenceRole": "source",
+                             "evidenceText": proposal.get("resolution") or proposal.get("context", {}).get("summary", proposal["text"]),
+                             "evidence": copy.deepcopy(proposal.get("evidence", []))}
+                    item["events"].append(event)
+                    if action in ("resolve", "obsolete"):
+                        item["state"] = "resolved" if action == "resolve" else "obsolete"
+                        item["resolution"] = proposal["resolution"]
+                        resolution_kind = (metadata or {}).get("question_resolution_kinds", {}).get(item["questionId"], "sourceEvidence")
+                        item["resolutionRecord"] = {"kind": resolution_kind, "text": proposal["resolution"], "evidence": event["evidence"], "eventId": event_id}
+                        if action == "resolve":
+                            item["propagation"] = {"eventId": event_id, "status": "pending"}
                 item["relatedSubjectUris"] = sorted(
                     set(item.get("relatedSubjectUris", []))
                     | set(proposal.get("relatedSubjectUris", []))
@@ -516,7 +609,8 @@ class QuestionStore:
             for key, value in (metadata or {}).items():
                 if key.startswith(("email_", "meeting_")):
                     page.extra_fields[key] = value
-            await self._save(page)
+            if len(replayed) != len(proposals):
+                await self._save(page)
             return [self._public(page, item) for item in records]
 
     async def get(self, question_id):
@@ -543,11 +637,11 @@ class QuestionStore:
         for item in records:
             if item.get("delivery", {}).get("mode") == "timeBound":
                 continue
-            if item["state"] in ("resolved", "dismissed") or (
+            if item["state"] != "open" or item.get("asking") == "muted" or (
                 item.get("notBefore") and item["notBefore"] > now
             ):
                 continue
-            if item["state"] == "asked":
+            if any(e["action"] == "asked" for e in item["events"]):
                 asked = [e for e in item["events"] if e["action"] == "asked"]
                 if not asked or asked[-1]["conversationId"] != conversation_id:
                     continue
@@ -555,6 +649,7 @@ class QuestionStore:
                 item["subject"]["kind"] == "self"
             )
             score += len(terms & set(re.findall(r"\w{3,}", item["text"].casefold())))
+            score += 5 if item.get("importance", {}).get("level") == "soon" else 0
             eligible.append((score, item))
         eligible.sort(key=lambda pair: (-pair[0], pair[1]["createdAt"], pair[1]["questionId"]))
         return [item for _, item in eligible[:limit]]
@@ -566,7 +661,7 @@ class QuestionStore:
         eligible = []
         for item in await self.list():
             delivery = item.get("delivery", {})
-            if delivery.get("mode") != "timeBound" or item["state"] not in ("open", "deferred"):
+            if delivery.get("mode") != "timeBound" or item["state"] != "open" or item.get("asking") == "muted":
                 continue
             start = datetime.fromisoformat(delivery["notBefore"])
             end = datetime.fromisoformat(delivery["expiresAt"])
@@ -682,7 +777,8 @@ class QuestionStore:
                     normalize(text) in normalize(data["evidenceText"]) for text in valid_wordings
                 ):
                     raise InvalidArgumentError("Asked evidence must contain the actual question")
-                if item["state"] in ("asked", "resolved", "dismissed") or (
+                already_asked = any(e["action"] == "asked" for e in item["events"][next((i + 1 for i in range(len(item["events"]) - 1, -1, -1) if item["events"][i]["action"] == "deferred"), 0):])
+                if item["state"] != "open" or item.get("asking") == "muted" or already_asked or (
                     not receipt and item.get("notBefore") and item["notBefore"] > now_iso()
                 ):
                     raise InvalidArgumentError("Question is not currently askable")
@@ -787,13 +883,19 @@ class QuestionStore:
                     }
                 )
             item["state"] = {
-                "asked": "asked",
+                "asked": "open",
                 "resolved": "resolved",
-                "deferred": "deferred",
-                "dismissed": "dismissed",
-                "partial": "deferred",
+                "deferred": "open",
+                "dismissed": "open",
+                "partial": "open",
             }[action]
-            if action in ("deferred", "partial"):
+            if action == "dismissed":
+                item["asking"] = "muted"
+            elif action == "deferred":
+                item["asking"] = "snoozed"
+            elif action != "asked":
+                item["asking"] = "allowed"
+            if action == "deferred":
                 item["notBefore"] = (
                     event.get("notBefore")
                     or (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
@@ -802,6 +904,7 @@ class QuestionStore:
                 item.pop("notBefore", None)
             if action == "resolved":
                 item["resolution"] = data.get("resolution") or data["evidenceText"]
+                item["resolutionRecord"] = {"kind": "userAnswer", "text": item["resolution"], "sourceRef": source_ref, "eventId": event_id}
                 item["propagation"] = {"eventId": event_id, "status": "pending"}
             await self._save(page)
             public = self._public(page, item)
@@ -849,10 +952,15 @@ class QuestionStore:
                 "question-" + uuid5(NAMESPACE_URL, f"{question_id}:{propagation['eventId']}").hex
             )
             propagation["sessionId"] = session_id
+            # Persist the attempt before calling another subsystem. Even a
+            # failed session lookup must yield to other pending resolutions.
+            propagation["lastAttemptAt"] = now_iso()
+            await self._save(page)
             session = await sessions.get(session_id, self.ctx, auto_create=True)
             session.meta.question_context = {
                 "subject": page.extra_fields["subject"],
                 "questionId": question_id,
+                "resolutionKind": item.get("resolutionRecord", {}).get("kind", "userAnswer"),
             }
             meeting_spec = None
             if item.get("purpose") == "speakerIdentity":
@@ -904,7 +1012,8 @@ class QuestionStore:
                             archiveUri=committed.get("archive_uri"),
                         )
                     else:
-                        propagation.update(status="failed", error=str(failure)[:2000])
+                        committed = await session.retry_question_archive(archive_uri.rsplit("/", 1)[-1])
+                        propagation.update(status="submitted", taskId=committed.get("task_id"), archiveUri=committed.get("archive_uri"))
                 else:
                     try:
                         await self.fs.read_file(archive_uri + "/messages.jsonl", ctx=self.ctx)
@@ -933,8 +1042,11 @@ class QuestionStore:
                                     "questionUri": page.uri,
                                     "subject": page.extra_fields["subject"],
                                     "question": item["text"],
-                                    "userAnswer": event["evidenceText"],
-                                    "sourceRef": event["sourceRef"],
+                                    "resolution": item.get("resolutionRecord"),
+                                    "answer": event["evidenceText"],
+                                    "context": item.get("context"),
+                                    "evidence": item.get("evidence", []),
+                                    "sourceRefs": event.get("sourceRefs") or [event["sourceRef"]],
                                     "meetingScope": item.get("scope"),
                                     "confirmedSpeakerAssignment": item.get(
                                         "confirmedSpeakerAssignment"
@@ -946,7 +1058,7 @@ class QuestionStore:
                                 "user",
                                 [
                                     TextPart(
-                                        "A user has explicitly clarified this memory question. Update relevant user/person/project memory using the actual answer, including a negative answer when it rejects a previous hypothesis. Do not infer new facts from refusal. The original question record already stores this answer; do not edit its question page.\n"
+                                        "A persisted memory question was resolved. Use resolution.kind to distinguish an actual user answer from source evidence. Update the subject and related memories from the supplied answer and original evidence, including supported negative corrections. Do not infer facts from refusal or turn source inference into user confirmation. The original question record already stores the answer; do not rewrite it.\n"
                                         + payload
                                     )
                                 ],
@@ -976,6 +1088,10 @@ class QuestionStore:
                             except InvalidArgumentError:
                                 propagation.update(status="unknown", archiveUri=archive_uri)
                         else:
-                            propagation.update(status="unknown", archiveUri=archive_uri)
+                            try:
+                                committed = await session.retry_question_archive(archive_uri.rsplit("/", 1)[-1])
+                                propagation.update(status="submitted", taskId=committed.get("task_id"), archiveUri=committed.get("archive_uri"))
+                            except InvalidArgumentError:
+                                propagation.update(status="unknown", archiveUri=archive_uri)
             await self._save(page)
             return self._public(page, item)

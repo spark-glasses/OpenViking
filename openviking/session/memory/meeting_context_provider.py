@@ -114,7 +114,7 @@ def create_meeting_registry(spec):
         str(Path(__file__).parents[2] / "prompts/templates/memory/meeting"), replace=True
     )
     registry.get("meetings").filename_template = f"{spec.meetingId}.md"
-    for name in ("entities", "events"):
+    for name in ("entities", "events", "projects"):
         schema = registry.get(name)
         if schema:
             schema.description = "Update an existing, fully read related matter only after all speakers in the current material have canonical user confirmations; until then save anonymous understanding in the fixed meetings document."
@@ -173,6 +173,18 @@ class MeetingContextProvider(SessionExtractContextProvider):
                 or assignment.get("sourceRef") != self.spec.sourceRef
             ):
                 raise ValueError("Confirmed speaker mapping belongs to a different source version")
+
+    def get_memory_write_context(self):
+        from openviking.session.memory.memory_write_context import MemoryWriteContext
+        if not hasattr(self, "_memory_write_context"):
+            self._memory_write_context = MemoryWriteContext(self._viking_fs, self._ctx)
+        write = self._memory_write_context
+        write.read_files = {uri: page for uri, page in self.read_file_contents.items() if uri in self._fully_read}
+        write.accepted_refs = self._source_refs
+        write.add_messages(self.messages, source_only=True)
+        if self._pending_meeting or self.spec.meetingMemoryUri in self._fully_read or self.spec.meetingMemoryUri in self._missing_uris:
+            write.register_subject({"kind": "matter", "id": uuid5(NAMESPACE_URL, self.spec.meetingMemoryUri).hex, "memoryUri": self.spec.meetingMemoryUri})
+        return write
 
     def get_tools(self):
         return [
@@ -840,30 +852,10 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
         )
 
     def _question_subject(self, fields):
-        kind, uri = fields.get("subjectKind"), fields.get("subjectMemoryUri")
-        if kind == "self":
-            return {"kind": "self", "id": "self"}
-        self._check_uri(uri)
-        if kind == "matter" and uri == self.spec.meetingMemoryUri:
-            if uri not in self._fully_read and not self._pending_meeting:
-                raise ValueError("Create useful meeting understanding before attaching questions")
-            return {"kind": "matter", "id": uuid5(NAMESPACE_URL, uri).hex, "memoryUri": uri}
-        if uri not in self._fully_read:
-            raise ValueError("Question subject must be fully read")
-        if (
-            kind == "person"
-            and person_anchor_from_uri(uri, self.root_uri) is not None
-        ):
-            return {"kind": "person", "id": person_anchor_from_uri(uri, self.root_uri), "memoryUri": uri}
-        if (
-            kind == "matter"
-            and any(
-                uri.startswith(self.root_uri + p + "/") for p in ("events", "entities", "matters")
-            )
-            and not is_question_uri(uri, self._ctx)
-        ):
-            return {"kind": "matter", "id": uuid5(NAMESPACE_URL, uri).hex, "memoryUri": uri}
-        raise ValueError("Invalid question subject")
+        if fields.get("subjectMemoryUri") == self.spec.meetingMemoryUri and self.spec.meetingMemoryUri in self._missing_uris and not self._pending_meeting:
+            raise ValueError("Create useful meeting memory before assigning its questions")
+        from openviking.session.memory.question_service import resolve_question_subject
+        return resolve_question_subject(self.get_memory_write_context(), fields)
 
     def route_operation(self, operation):
         if operation.memory_type == "meetings":
@@ -908,6 +900,12 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
             if op.memory_type == "questions":
                 self.route_operation(op)
                 self._question_subject(op.memory_fields)
+            if op.memory_type == "projects":
+                from openviking.session.memory.project_paths import project_uri
+                target = project_uri(self._ctx, op.memory_fields.get("projectId"))
+                if op.uris != [target] or target not in self._fully_read:
+                    raise ValueError("Read the canonical Project before updating it")
+                op.old_memory_file_content = self.read_file_contents[target]
             for uri in op.uris:
                 self._check_uri(uri)
                 if op.memory_type == "meetings" and uri != self.spec.meetingMemoryUri:
@@ -920,11 +918,11 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
                     raise ValueError(
                         "Person update requires a verified user-confirmed speaker mapping"
                     )
-                if op.memory_type in ("entities", "events") and unconfirmed_speakers:
+                if op.memory_type in ("entities", "events", "projects") and unconfirmed_speakers:
                     raise ValueError(
                         "Related matter updates require user confirmation of all current speakers"
                     )
-                if op.memory_type in ("entities", "events") and (
+                if op.memory_type in ("entities", "events", "projects") and (
                     uri not in self._fully_read
                     or not uri.startswith(self.root_uri + op.memory_type + "/")
                     or is_question_uri(uri, self._ctx)

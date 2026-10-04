@@ -1,0 +1,23 @@
+memory_type: projects
+description: |
+  An ongoing personal undertaking, at any granularity: a product, a subsystem,
+  education, or another sustained goal. Not restricted to a company or workspace.
+  Use a stable projectId obtained from the Project catalog or ensureProject.
+  Preserve historical progress, decisions, People links and original source citations.
+directory: "viking://user/{{ user_space }}/memories/projects"
+filename_template: "{{ projectId }}/memory.md"
+enabled: true
+embedding_template: "{{ content }}"
+fields:
+  - name: projectId
+    type: string
+    description: "Stable Project ID from the catalog. Never invent or rename it."
+    merge_op: replace
+  - name: name
+    type: string
+    description: "Project's human-readable name. Preserve user corrections."
+    merge_op: replace
+  - name: content
+    type: string
+    description: "Cumulative Markdown: meaning to user, goals, roles, People, progress, decisions, dated history and source references."
+    merge_op: patch

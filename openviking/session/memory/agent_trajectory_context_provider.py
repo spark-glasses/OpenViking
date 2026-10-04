@@ -41,6 +41,9 @@ class AgentTrajectoryContextProvider(SessionExtractContextProvider):
         "_transaction_handle",
     }
 
+    # Agent skills/trajectory summaries are derived artifacts, not new user evidence.
+    question_writes_enabled = False
+
     def __init__(
         self,
         *args,

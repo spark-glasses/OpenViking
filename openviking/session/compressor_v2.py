@@ -301,7 +301,7 @@ class SessionCompressorV2:
             from openviking.session.memory.question_answer_context_provider import answer_registry
 
             registry = answer_registry(question_context["subject"])
-            allowed_memory_types = {"people", "profile", "preferences", "entities", "events"}
+            allowed_memory_types = {"people", "profile", "preferences", "entities", "events", "projects"}
             allowed_peer_ids = set()
         if memory_update_context:
             from openviking.session.memory.memory_update_context import UPDATE_MEMORY_TYPES
@@ -618,6 +618,17 @@ class SessionCompressorV2:
                 updater.strict_merge_errors = bool(
                     email_context or meeting_context or question_context or memory_update_context
                 )
+
+                # The source provider may enrich validated operations with verified
+                # timing/speaker scope during before_apply. Seal that final server
+                # result so storage never accepts model-supplied lifecycle fields.
+                write = getattr(extract_context, "memory_write_context", None)
+                if write is not None:
+                    from openviking.session.memory.question_service import QuestionService
+                    domain = QuestionService(write)
+                    for operation in operations.upsert_operations:
+                        if operation.memory_type == "questions":
+                            domain.approve(operation)
 
                 # Apply operations with isolation_handler
                 result = await updater.apply_operations(

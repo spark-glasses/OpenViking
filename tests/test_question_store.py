@@ -55,6 +55,14 @@ def proposal(**changes):
     }
 
 
+@pytest.mark.parametrize("ref", [{"sourceRef": "email:one"}, ["email:one"], None, 42])
+def test_malformed_source_reference_is_repairable_validation_error(ref):
+    from openviking.session.memory.question_store import validate_proposals
+
+    with pytest.raises(ValueError, match="sourceRefs"):
+        validate_proposals([proposal(sourceRefs=[ref])], {"email:one"})
+
+
 async def create(store, ctx, subject=None):
     subject = subject or {"kind": "self", "id": "self"}
     return (await store.discover(question_uri(ctx, subject), subject, [proposal()]))[0]
@@ -136,19 +144,20 @@ async def test_candidate_is_not_asked_and_duplicate_message_is_idempotent(setup)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "action,state",
+    "action,state,asking",
     [
-        ("resolved", "resolved"),
-        ("dismissed", "dismissed"),
-        ("partial", "deferred"),
-        ("deferred", "deferred"),
+        ("resolved", "resolved", "allowed"),
+        ("dismissed", "open", "muted"),
+        ("partial", "open", "allowed"),
+        ("deferred", "open", "snoozed"),
     ],
 )
-async def test_spontaneous_answers_and_refusals_are_distinct(setup, action, state):
+async def test_spontaneous_answers_and_refusals_are_distinct(setup, action, state, asking):
     _, ctx, store = setup
     q = await create(store, ctx)
     result = await store.record(event(q, action))
     assert result["question"]["state"] == state
+    assert result["question"]["asking"] == asking
     assert len(result["question"]["answers"]) == 1
     assert ("propagation" in result["question"]) is (action == "resolved")
 
@@ -190,7 +199,7 @@ async def test_cross_owner_access_and_move_preserve_answer_and_identity(setup):
     with pytest.raises(NotFoundError):
         await QuestionStore(fs, other_ctx).get(q["questionId"])
     target = {"kind": "person", "id": "anchor"}
-    await store.discover(question_uri(ctx, target), target, [proposal(questionId=q["questionId"])])
+    await store.relocate(q["questionId"], (await store.get(q["questionId"]))["revision"], target, [{"sourceRef": "user:confirmed", "quote": "This belongs to that project"}])
     actual = await store.get(q["questionId"])
     assert actual["subject"] == target
     assert actual["state"] == "resolved"
@@ -213,9 +222,7 @@ async def test_interrupted_move_repairs_duplicate_before_serving_records(setup):
     fs.write_file = fail_source
     target = {"kind": "person", "id": "anchor"}
     with pytest.raises(OSError):
-        await store.discover(
-            question_uri(ctx, target), target, [proposal(questionId=q["questionId"])]
-        )
+        await store.relocate(q["questionId"], (await store.get(q["questionId"]))["revision"], target, [{"sourceRef": "user:confirmed", "quote": "Move this question"}])
     fs.write_file = original_write
     fresh = QuestionStore(fs, ctx)
     actual = await fresh.get(q["questionId"])
@@ -232,7 +239,8 @@ async def test_existing_archive_is_reconciled_without_resubmitting(setup):
     q = await create(store, ctx)
     await store.record(event(q, "resolved"))
     session = SimpleNamespace(
-        uri="viking://user/alice/sessions/answer", meta=SimpleNamespace(), _save_meta=AsyncMock()
+        uri="viking://user/alice/sessions/answer", meta=SimpleNamespace(), _save_meta=AsyncMock(),
+        retry_question_archive=AsyncMock(side_effect=InvalidArgumentError("not eligible")),
     )
     sessions = SimpleNamespace(
         get=AsyncMock(return_value=session), get_commit_task=AsyncMock(return_value=None)
@@ -389,7 +397,7 @@ async def test_subject_move_preserves_delivery_id_and_initial_metadata(setup, cl
     _, ctx, store = setup
     q = await create_timed(store, ctx)
     target = {"kind": "person", "id": "confirmed-anchor"}
-    await store.discover(question_uri(ctx, target), target, [proposal(questionId=q["questionId"])])
+    await store.relocate(q["questionId"], (await store.get(q["questionId"]))["revision"], target, [{"sourceRef": "user:confirmed", "quote": "This belongs to that project"}])
     actual = await store.get(q["questionId"])
     assert actual["deliveryId"] == q["deliveryId"]
     assert actual["scope"] == q["scope"]
@@ -436,13 +444,14 @@ async def test_received_time_is_authoritative_and_retry_is_idempotent_after_expi
     data = received_event(q)
     data["evidenceAt"] = "2030-01-01T10:00:00Z"
     actual = (await store.record(data))["question"]
-    assert actual["state"] == "asked"
+    assert actual["state"] == "open"
     assert actual["events"][0]["at"] == "2030-01-01T11:59:00+00:00"
     assert actual["events"][0]["deliveryReceipt"]["channel"] == "glasses"
     await store.record(event(q, "partial", messageId="late-partial"))
     retry = await QuestionStore(fs, ctx).record(data)
     assert retry["duplicate"] is True
-    assert retry["question"]["state"] == "deferred"
+    assert retry["question"]["asking"] == "allowed"
+    assert retry["question"]["events"][-1]["action"] == "partial"
     assert len(retry["question"]["events"]) == 2
     assert await store.due() == []
     with pytest.raises(InvalidArgumentError):
@@ -585,7 +594,7 @@ async def test_questions_router_exposes_due_get_revision_and_receipt_contract(
             "/api/v1/questions/record", json=received_event(q, channel="phone")
         )
         assert response.status_code == 200
-        assert response.json()["result"]["question"]["state"] == "asked"
+        assert response.json()["result"]["question"]["state"] == "open"
         assert (await client.post("/api/v1/questions/due", json={})).json()["result"][
             "questions"
         ] == []
@@ -604,7 +613,7 @@ async def test_explicit_contextual_delivery_keeps_legacy_asked_contract(setup, c
     assert [candidate["questionId"] for candidate in await store.candidates()] == [q["questionId"]]
     assert "deliveryId" not in q
     actual = (await store.record(event(q, "asked")))["question"]
-    assert actual["state"] == "asked"
+    assert actual["state"] == "open"
     assert await store.due() == []
 
 
@@ -617,7 +626,9 @@ async def test_answer_or_dismissal_before_delivery_prevents_due_and_receipt(setu
     assert await store.due() == []
     with pytest.raises(InvalidArgumentError):
         await store.record(received_event(q))
-    assert (await store.get(q["questionId"]))["state"] == action
+    assert (await store.get(q["questionId"]))["state"] == ("resolved" if action == "resolved" else "open")
+    if action == "dismissed":
+        assert (await store.get(q["questionId"]))["asking"] == "muted"
 
 
 TRANSCRIPT_REF = "transcript:00000000-0000-4000-8000-000000000001"
@@ -753,11 +764,12 @@ async def test_cycle_changes_only_for_explicit_deferral_and_survives_restart_mov
     assert duplicate["duplicate"]
     assert duplicate["question"]["deliveryCycleId"] == deferred["deliveryCycleId"]
     target = {"kind": "person", "id": "anchor-1"}
-    await store.discover(question_uri(ctx, target), target, [proposal(questionId=q["questionId"])])
+    await store.relocate(q["questionId"], (await store.get(q["questionId"]))["revision"], target, [{"sourceRef": "user:confirmed", "quote": "This belongs to that project"}])
     fresh = await QuestionStore(fs, ctx).get(q["questionId"])
     assert fresh["deliveryCycleId"] == deferred["deliveryCycleId"]
     assert fresh["timing"] == q["timing"]
-    assert fresh["events"] == deferred["events"]
+    assert fresh["events"][:-1] == deferred["events"]
+    assert fresh["events"][-1]["action"] == "relocated"
 
 
 @pytest.mark.asyncio
@@ -777,7 +789,7 @@ async def test_cycle_receipt_after_policy_window_and_multichannel_retry_after_an
     clock["now"] = "2030-01-03T12:00:00+00:00"
     data = cycle_event(q, receivedAt="2030-01-03T11:59:00Z")
     asked = (await store.record(data))["question"]
-    assert asked["state"] == "asked"
+    assert asked["state"] == "open"
     assert asked["events"][-1]["deliveryReceipt"]["deliveryId"] == q["deliveryCycleId"]
     await store.record(event(q, "resolved"))
     data["deliveryReceipt"]["channel"] = "glasses"
@@ -800,7 +812,7 @@ async def test_stale_cycle_cannot_reopen_after_deferral_but_recorded_retry_is_sa
     clock["now"] = "2030-01-01T12:30:00+00:00"
     new = cycle_event(deferred, messageId="asked-2", receivedAt="2030-01-01T12:30:00Z")
     new["messageId"] = "asked-2"
-    assert (await store.record(new))["question"]["state"] == "asked"
+    assert (await store.record(new))["question"]["state"] == "open"
     assert len((await store.get(q["questionId"]))["events"]) == 3
 
 
@@ -813,7 +825,9 @@ async def test_unrecorded_old_cycle_receipt_cannot_reopen_terminal_question(setu
     await store.record(event(q, action, messageId="terminal"))
     with pytest.raises(InvalidArgumentError):
         await store.record(cycle_event(q))
-    assert (await store.get(q["questionId"]))["state"] == action
+    assert (await store.get(q["questionId"]))["state"] == ("resolved" if action == "resolved" else "open")
+    if action == "dismissed":
+        assert (await store.get(q["questionId"]))["asking"] == "muted"
 
 
 @pytest.mark.asyncio
@@ -821,7 +835,7 @@ async def test_timing_question_can_be_asked_contextually_without_device_receipt(
     _, ctx, store = setup
     q = await create_with_timing(store, ctx)
     actual = (await store.record(event(q, "asked")))["question"]
-    assert actual["state"] == "asked"
+    assert actual["state"] == "open"
     assert "deliveryReceipt" not in actual["events"][-1]
 
 
@@ -852,7 +866,7 @@ async def test_unrecorded_prior_cycle_is_rejected_after_user_deferral(setup, clo
     await store.record(event(q, "deferred", notBefore="2030-01-01T11:00:00Z"))
     with pytest.raises(InvalidArgumentError):
         await store.record(cycle_event(q))
-    assert (await store.get(q["questionId"]))["state"] == "deferred"
+    assert (await store.get(q["questionId"]))["asking"] == "snoozed"
 
 
 @pytest.mark.asyncio
@@ -906,8 +920,33 @@ async def test_delayed_receipt_can_verify_original_canonical_wording_after_redis
     with pytest.raises(InvalidArgumentError):
         await store.record({**cycle_event(q), "evidenceText": "Unrelated invented question?"})
     actual = await QuestionStore(fs, ctx).record(cycle_event(q))
-    assert actual["question"]["state"] == "asked"
+    assert actual["question"]["state"] == "open"
     assert actual["question"]["events"][-1]["evidenceText"] == q["text"]
     assert "wordingHistory" not in actual["question"]
     page = MemoryFileUtils.read(fs.files[q["questionUri"]])
     assert page.extra_fields["questions"][0]["wordingHistory"] == [q["text"]]
+
+
+@pytest.mark.asyncio
+async def test_email_identity_endpoint_keeps_unknown_people_out_of_people_and_deduplicates(setup, monkeypatch):
+    from openviking.server.routers import questions as router
+    fs, ctx, store = setup
+    monkeypatch.setattr(router, "store", lambda context: store)
+    monkeypatch.setattr(router, "get_service", lambda: SimpleNamespace(viking_fs=fs, vikingdb_manager=None))
+    body = router.EmailIdentityRequest(
+        clusterId="00000000-0000-4000-8000-000000000009",
+        addresses=["person@example.test"],
+        description="the founder discussing a prototype",
+        sourceRefs=["email:00000000-0000-4000-8000-000000000001"],
+    )
+    await router.discover_email_identity(body, ctx)
+    await router.discover_email_identity(body, ctx)
+    records = await store.list()
+    assert len(records) == 1
+    assert records[0]["subject"]["kind"] == "unassigned"
+    assert records[0]["purpose"] == "emailIdentity"
+    assert records[0]["scope"]["clusterId"] == str(body.clusterId)
+    assert not any("/people/" in key for key in fs.files)
+    await store.record(event(records[0], "dismissed"))
+    await router.discover_email_identity(body, ctx)
+    assert (await store.get(records[0]["questionId"]))["asking"] == "muted"

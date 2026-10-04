@@ -66,21 +66,17 @@ class ContentWriteCoordinator:
         self._validate_target_uri(normalized_uri)
         self._viking_fs._ensure_mutable_access(normalized_uri, ctx)
 
-        # Existing canonical question pages are generated views of OV-owned
-        # structured lifecycle records. Generic replacement bypasses their merge
-        # lock and could erase an answer. New-page create remains available for
-        # trusted imports; subsequent updates use the question API.
+        # Canonical question pages are generated views of OV-owned lifecycle
+        # records. Generic creation/replacement would bypass validation, locks
+        # and history; offline migrations write through the storage layer.
         from openviking.session.memory.question_store import is_question_uri
+        from openviking.session.memory.question_store import memory_root
+
+        if normalized_uri.startswith(memory_root(ctx) + "projects/"):
+            raise InvalidArgumentError("Project files must be updated through ProjectStore or QuestionStore")
 
         if is_question_uri(normalized_uri, ctx):
-            try:
-                await self._viking_fs.read_file(normalized_uri, ctx=ctx)
-            except NotFoundError:
-                pass
-            else:
-                raise InvalidArgumentError(
-                    "Existing question pages must be updated through the questions API"
-                )
+            raise InvalidArgumentError("Question pages must be updated through QuestionStore")
 
         if mode == "create":
             return await self._create_and_write(

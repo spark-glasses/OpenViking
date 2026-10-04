@@ -181,12 +181,15 @@ class MemoryReadTool(MemoryTool):
         offset = kwargs.get("offset", 0)
         limit = kwargs.get("limit", -1)
         try:
-            content = await ctx.viking_fs.read_file(
-                uri,
-                ctx=ctx.request_ctx,
-            )
-            # Parse MEMORY_FIELDS from comment and return dict directly
-            mf = MemoryFileUtils.read(content, uri=uri)
+            from openviking.session.memory.project_paths import project_id_from_uri
+            from openviking.session.memory.question_store import memory_root
+            project_id = project_id_from_uri(uri, memory_root(ctx.request_ctx))
+            if project_id:
+                from openviking.session.memory.project_store import ProjectStore
+                mf = await ProjectStore(ctx.viking_fs, ctx.request_ctx).get(project_id)
+            else:
+                content = await ctx.viking_fs.read_file(uri, ctx=ctx.request_ctx)
+                mf = MemoryFileUtils.read(content, uri=uri)
             ctx.read_file_contents[uri] = mf
             # Remove links/backlinks from LLM-visible output (not needed for extraction)
             llm_result = mf.to_metadata()

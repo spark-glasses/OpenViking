@@ -22,6 +22,8 @@ from openviking.session.memory.dataclass import (
 from openviking.session.memory.memory_isolation_handler import MemoryIsolationHandler
 from openviking.session.memory.merge_op import MergeOp
 from openviking.session.memory.schema_model_generator import SchemaModelGenerator
+from openviking.session.memory.question_context import QuestionContext
+from openviking.session.memory.question_contract import QUESTION_INSTRUCTION
 from openviking.session.memory.tools import (
     MEMORY_TOOLS_REGISTRY,
     add_tool_call_pair_to_messages,
@@ -87,6 +89,7 @@ class ExtractLoop:
 
         # 预计算：避免每次迭代重复计算
         self._tool_schemas: Optional[List[Dict[str, Any]]] = None
+        self._active_schemas = None
         self._expected_fields: Optional[List[str]] = None
         self._operations_model: Optional[Any] = None
 
@@ -96,6 +99,7 @@ class ExtractLoop:
         self._disable_tools_for_iteration = False
 
         self._tool_ctx = None
+        self._questions = None
 
     async def run(self) -> Tuple[Optional[Any], List[Dict[str, Any]]]:
         """
@@ -116,6 +120,13 @@ class ExtractLoop:
 
         # 从 provider 获取 schemas（内部自动加载 registry）
         schemas = self.context_provider.get_memory_schemas(self.ctx)
+        self._questions = None
+        if self.ctx and self.context_provider.question_writes_enabled:
+            from openviking.session.memory.memory_type_registry import create_default_registry
+            schemas = [s for s in schemas if s.memory_type != "questions"] + [create_default_registry().get("questions")]
+            self._questions = QuestionContext(self.context_provider)
+
+        self._active_schemas = schemas
 
         # 初始化 schema 生成器（使用 schemas 而非 registry）
         output_language = self.context_provider.get_output_language()
@@ -127,6 +138,8 @@ class ExtractLoop:
 
         # 预计算工具 schemas
         allowed_tools = self.context_provider.get_tools()
+        if self._questions:
+            allowed_tools = [*allowed_tools, *self._questions.tools]
         self._tool_schemas = [
             tool.to_schema()
             for tool in MEMORY_TOOLS_REGISTRY.values()
@@ -158,6 +171,8 @@ class ExtractLoop:
             role_scope
         )
 
+        if self._questions:
+            self._extract_context.memory_write_context = self._questions.write
         json_schema = self._operations_model.model_json_schema()
 
         # Build initial messages from provider
@@ -185,6 +200,7 @@ class ExtractLoop:
                 "content": f"""
 {self.context_provider.instruction()}
 {page_id_rules}
+{QUESTION_INSTRUCTION if self._questions else ''}
 {link_rules}
 ## Read Format Rules
 - The read tool accepts `uri`, optional `offset` (0-indexed), and optional `limit`.
@@ -204,6 +220,8 @@ The final output of the model must strictly follow the JSON Schema format shown 
         # Pre-fetch context via provider
         tool_call_messages = await self.context_provider.prefetch()
         messages.extend(tool_call_messages)
+        if self._questions:
+            messages.append({"role": "user", "content": json.dumps(await self._questions.prefetch(), ensure_ascii=False)})
 
         for uri in self.context_provider.read_file_contents:
             self._extract_context.page_id_map.get_page_id(uri)
@@ -277,6 +295,8 @@ The final output of the model must strictly follow the JSON Schema format shown 
                             console=True,
                         )
                         continue
+                    if self._questions:
+                        self._questions.validate(final_operations)
                     validate_operations = getattr(self.context_provider, "validate_operations", None)
                     if validate_operations is not None:
                         validate_people = getattr(
@@ -285,6 +305,10 @@ The final output of the model must strictly follow the JSON Schema format shown 
                         if validate_people is not None:
                             validate_people(final_operations)
                         validate_operations(final_operations)
+                    if self._questions:
+                        for operation in final_operations.upsert_operations:
+                            if operation.memory_type == "questions":
+                                self._questions.service.approve(operation)
                 except ValueError as error:
                     if validation_repair_count >= 2 or iteration >= max_iterations:
                         raise
@@ -346,7 +370,7 @@ The final output of the model must strictly follow the JSON Schema format shown 
         role_scope = self._isolation_handler.get_read_scope()
         page_id_map = getattr(self._extract_context, "page_id_map", None)
 
-        for schema in self.context_provider.get_memory_schemas(self.ctx):
+        for schema in (self._active_schemas or self.context_provider.get_memory_schemas(self.ctx)):
             memory_type = schema.memory_type
             value = getattr(operations, memory_type, None)
             if value is None:
@@ -355,7 +379,9 @@ The final output of the model must strictly follow the JSON Schema format shown 
             items = value if isinstance(value, list) else [value]
 
             for item in items:
-                item_dict = dict(item)
+                # Preserve native patch objects for MemoryUpdater. Only the
+                # structured question contract needs recursively plain records.
+                item_dict = item.model_dump(exclude_none=True) if memory_type == "questions" and hasattr(item, "model_dump") else dict(item)
                 item_dict["memory_type"] = memory_type
                 self._isolation_handler.fill_identity_fields(item_dict, role_scope=role_scope)
 
@@ -367,6 +393,10 @@ The final output of the model must strictly follow the JSON Schema format shown 
                     uris=[],
                     page_id=page_id,
                 )
+                if memory_type == "questions" and self._questions:
+                    self._questions.route(resolved_op)
+                    upsert_operations.append(resolved_op)
+                    continue
 
                 if page_id is not None and page_id_map is not None:
                     resolved_uri = page_id_map.resolve(page_id)
@@ -592,7 +622,15 @@ The final output of the model must strictly follow the JSON Schema format shown 
         # Execute all tool calls in parallel
         async def execute_single_tool_call(idx: int, tool_call):
             """Execute a single tool call."""
-            result = await self.context_provider.execute_tool(tool_call)
+            if self._questions and tool_call.name in self._questions.tools:
+                try:
+                    result = await self._questions.execute(tool_call.name, tool_call.arguments or {})
+                except (ValueError, KeyError) as error:
+                    result = {"error": str(error)}
+            else:
+                result = await self.context_provider.execute_tool(tool_call)
+                if self._questions and tool_call.name not in ("read", "search", "searchEmails", "searchTranscripts", "listProjects", "ensureProject"):
+                    self._questions.observe(result)
             return idx, tool_call, result
 
         action_tasks = [

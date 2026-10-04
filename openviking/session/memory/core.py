@@ -73,3 +73,12 @@ class ExtractContextProvider(ABC):
             需要参与的 MemoryTypeSchema 列表
         """
         pass
+
+    question_writes_enabled = True
+
+    def get_memory_write_context(self):
+        """Return authenticated subjects and visible source receipts for this run."""
+        raise NotImplementedError("Semantic providers must supply MemoryWriteContext")
+
+    def register_memory_read(self, uri, page):
+        self.get_memory_write_context().read_files[uri] = page

@@ -461,6 +461,13 @@ def parse_json_with_stability(
         # First try direct model validation
         return model_class.model_validate(parsed_data, strict=False), None
     except Exception as e:
+        # A malformed question must never become a successful empty list in the
+        # tolerant fallback. Return feedback so the extraction loop can repair it.
+        if isinstance(parsed_data, dict) and "questions" in parsed_data and "questions" in model_class.model_fields:
+            try:
+                TypeAdapter(model_class.model_fields["questions"].annotation).validate_python(parsed_data["questions"])
+            except Exception as question_error:
+                return None, f"Invalid question operations: {question_error}"
         tracer.info(f"Direct model validation failed, trying parse_value_with_tolerance: {e}")
         tracer.info(f"content={content}")
         # Fallback: Apply value fault tolerance to each field individually

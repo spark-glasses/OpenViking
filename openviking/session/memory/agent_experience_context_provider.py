@@ -36,6 +36,9 @@ MAX_SOURCE_TRAJS = 3  # max trajectories to load per experience
 class AgentExperienceContextProvider(SessionExtractContextProvider):
     """Phase 2 provider: consolidate the new trajectory into experience memories."""
 
+    # Agent skills/trajectory summaries are derived artifacts, not new user evidence.
+    question_writes_enabled = False
+
     def __init__(
         self,
         messages: Any,

@@ -25,6 +25,8 @@ class QuestionAnswerContextProvider(SessionExtractContextProvider):
     def __init__(self, *, question_context, **kwargs):
         super().__init__(**kwargs)
         self.subject = question_context["subject"]
+        self.resolution_kind = question_context.get("resolutionKind", "userAnswer")
+        self.question_id = question_context["questionId"]
         self._registry = answer_registry(self.subject)
         self.root = memory_root(self._ctx)
         self._link_enabled = False
@@ -38,7 +40,8 @@ class QuestionAnswerContextProvider(SessionExtractContextProvider):
     def instruction(self):
         return (
             super().instruction()
-            + "\nThis input is an actual user clarification of a persisted question. Read and update its existing subject memory using the answer, including negative corrections. The known subject is "
+            + "\nThis input is a persisted question resolution of kind " + self.resolution_kind
+            + ". Only userAnswer represents the user's answer; sourceEvidence is an evidence-backed inference. Read and update its existing subject and related memories using the answer and original evidence, including negative corrections. The known subject is "
             + str(self.subject)
             + ". Do not duplicate an existing person as a new entity. Preserve the question page: its answer and lifecycle are already managed by OV. Do not delete memories or create new matter cards."
         )
@@ -77,6 +80,15 @@ class QuestionAnswerContextProvider(SessionExtractContextProvider):
         if operations.errors or operations.delete_file_contents or operations.resolved_links:
             raise ValueError("Clarification cannot delete memories or mutate implicit targets")
         for operation in operations.upsert_operations:
+            if operation.memory_type == "questions":
+                # Other uncertainties can be discovered during propagation, but
+                # this already-resolved question is never reopened recursively.
+                import json
+                entries = operation.memory_fields["entries"]
+                entries = json.loads(entries) if isinstance(entries, str) else entries
+                if any(e.get("questionId") == self.question_id for e in entries):
+                    raise ValueError("The resolved question cannot be rewritten during propagation")
+                continue
             for uri in operation.uris:
                 if not uri.startswith(self.root) or is_question_uri(uri, self._ctx):
                     raise ValueError("Clarification cannot change question records or other users")

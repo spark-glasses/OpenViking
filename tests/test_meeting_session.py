@@ -115,6 +115,26 @@ def email_spec():
     }
 
 
+@pytest.mark.asyncio
+async def test_question_retry_recovers_same_archive_and_checks_running_task(setup, monkeypatch):
+    setup.session.meta.question_context = {"questionId": "q", "resolutionKind": "sourceEvidence"}
+    setup.session._read_archive_messages = AsyncMock(return_value=setup.messages)
+    setup.session._run_memory_extraction = AsyncMock()
+    setup.fs.files[setup.archive + "/.failed.json"] = "{}"
+    tracker = SimpleNamespace(create_if_no_running=AsyncMock(return_value=SimpleNamespace(task_id="retry")))
+    monkeypatch.setattr("openviking.service.task_tracker.get_task_tracker", lambda: tracker)
+    result = await setup.session.retry_question_archive("archive_001")
+    await asyncio.sleep(0)
+    assert result["archive_uri"] == setup.archive
+    assert setup.session._run_memory_extraction.await_args.kwargs["messages"] == setup.messages
+    assert setup.session.meta.commit_count == 0
+    tracker.create_if_no_running.return_value = None
+    with pytest.raises(InvalidArgumentError):
+        await setup.session.retry_question_archive("archive_001")
+    setup.fs.files[setup.archive + "/.done"] = "{}"
+    assert (await setup.session.retry_question_archive("archive_001"))["status"] == "completed"
+
+
 async def prepare_failed_archive(setup):
     setup.fs.files[setup.archive + "/meeting_context.json"] = json.dumps(setup.spec)
     setup.fs.files[setup.archive + "/.failed.json"] = "{}"

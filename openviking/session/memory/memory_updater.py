@@ -95,6 +95,13 @@ async def write_stored_links(
 
         if is_question_uri(uri, ctx):
             continue
+        from openviking.session.memory.project_paths import project_id_from_uri
+        from openviking.session.memory.project_store import ProjectStore
+        from openviking.session.memory.question_store import memory_root
+        project_id = project_id_from_uri(uri, memory_root(ctx))
+        if project_id:
+            await ProjectStore(viking_fs, ctx).add_links(project_id, link_groups["links"], link_groups["backlinks"])
+            continue
         try:
             content = await viking_fs.read_file(uri, ctx=ctx)
             if not content:
@@ -866,6 +873,7 @@ class MemoryUpdater:
                 or uri.endswith("/.overview.md")
                 or uri.endswith("/.abstract.md")
                 or uri.endswith("/questions.md")
+                or "/memories/projects/" in uri
             ):
                 continue
             try:
@@ -886,24 +894,29 @@ class MemoryUpdater:
         """Apply upsert operation from a flat model."""
         viking_fs = self._get_viking_fs()
 
+        from openviking.session.memory.project_store import ProjectStore
+        from openviking.session.memory.question_store import memory_root
+
+        if resolved_op.memory_type == "projects":
+            if len(resolved_op.uris) != 1:
+                raise ValueError("A Project operation updates exactly one identity")
+            await ProjectStore(viking_fs, ctx, self._vikingdb).apply_native(resolved_op, self._registry.get("projects"))
+            return
+        if resolved_op.memory_type != "questions" and any(uri.startswith(memory_root(ctx) + "projects/") for uri in resolved_op.uris):
+            raise ValueError("Projects require the revision-checked Project entry point")
+
         if (
             resolved_op.memory_type == "questions"
             and "question_subject" in resolved_op.memory_fields
         ):
-            import json
-
-            from openviking.session.memory.question_store import QuestionStore
-
-            for uri in resolved_op.uris:
-                await QuestionStore(viking_fs, ctx, self._vikingdb).discover(
-                    uri,
-                    resolved_op.memory_fields["question_subject"],
-                    json.loads(resolved_op.memory_fields["entries"]),
-                    metadata=resolved_op.memory_fields,
-                )
+            from openviking.session.memory.question_service import QuestionService
+            write = getattr(extract_context, "memory_write_context", None)
+            if write is None:
+                raise ValueError("Question updates require authenticated MemoryWriteContext")
+            await QuestionService(write, self._vikingdb).apply(resolved_op)
             return
 
-        from openviking.session.memory.question_store import is_question_uri
+        from openviking.session.memory.question_store import is_question_uri, memory_root
 
         if any(is_question_uri(uri, ctx) for uri in resolved_op.uris):
             raise ValueError("Canonical question pages require the question merge entry point")
@@ -1065,10 +1078,12 @@ class MemoryUpdater:
 
     async def _apply_delete(self, uri: str, ctx: RequestContext) -> None:
         """Apply delete operation (uri is already a string)."""
-        from openviking.session.memory.question_store import is_question_uri
+        from openviking.session.memory.question_store import is_question_uri, memory_root
 
         if is_question_uri(uri, ctx):
             raise ValueError("Canonical question history cannot be deleted by extraction")
+        if uri.startswith(memory_root(ctx) + "projects/"):
+            raise ValueError("Archive a Project using its structured status; do not delete its identity files")
         viking_fs = self._get_viking_fs()
 
         # Delete from VikingFS

@@ -28,7 +28,7 @@ class MemoryFS:
 
 
 @pytest.mark.asyncio
-async def test_email_identity_question_is_self_owned_and_replays_same_cluster(monkeypatch):
+async def test_email_identity_question_is_unassigned_and_replays_same_cluster(monkeypatch):
     fs = MemoryFS()
     ctx = RequestContext(user=UserIdentifier("account", "alice"), role=Role.ROOT)
     store = QuestionStore(fs, ctx)
@@ -39,11 +39,12 @@ async def test_email_identity_question_is_self_owned_and_replays_same_cluster(mo
     first = (await questions.discover_email_identity(body, ctx)).result["question"]
     replay = (await questions.discover_email_identity(body, ctx)).result["question"]
     assert first["questionId"] == replay["questionId"]
-    assert first["subject"] == {"kind": "self", "id": "self"}
+    assert first["subject"] == {"kind": "unassigned", "id": "unassigned"}
     assert first["purpose"] == "emailIdentity"
     assert first["scope"] == {"kind": "emailIdentity", "clusterId": str(cluster), "addresses": body.addresses}
     assert first["ownershipUncertain"] is True
-    assert first["sourceRefs"] == body.sourceRefs
+    assert set(first["sourceRefs"]) == set(body.sourceRefs + ["email-identity-observation:" + str(cluster)])
+    assert first["evidence"][0]["sourceRef"] == "email-identity-observation:" + str(cluster)
     assert not any("/people/" in uri for uri in fs.files)
 
 

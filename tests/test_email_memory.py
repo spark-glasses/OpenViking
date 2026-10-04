@@ -91,7 +91,7 @@ def setup(monkeypatch):
             role="user",
             parts=[
                 TextPart(
-                    "New email from Ethan: continue the previous Atlas proposal. " + INITIAL_REF
+                    json.dumps({"emails": [{"sourceRef": INITIAL_REF, "body": "Hi Junkuan. Continue the previous Atlas proposal."}]})
                 )
             ],
         )
@@ -157,6 +157,7 @@ def test_email_scope_and_anchor_stay_stable_with_shared_people_schema(setup):
         "people",
         "entities",
         "events",
+        "projects",
         "questions",
     }
 
@@ -545,6 +546,8 @@ async def test_native_question_result_matches_saved_document(setup, monkeypatch)
         "topicKey": "user_alias_junkuan",
         "text": "Do you also use Junkuan?",
         "sourceRefs": [INITIAL_REF],
+        "context": {"summary": "Ethan used an unfamiliar greeting", "uncertainty": "Is Junkuan a user alias?", "knownFacts": [], "candidates": []},
+        "evidence": [{"sourceRef": INITIAL_REF, "quote": "Hi Junkuan."}],
     }
     final = json.dumps(
         {
@@ -553,11 +556,10 @@ async def test_native_question_result_matches_saved_document(setup, monkeypatch)
             "events": [],
             "questions": [
                 {
-                    "page_id": 100,
                     "subjectKind": "self",
                     "subjectId": "self",
                     "subjectMemoryUri": "",
-                    "entries": json.dumps([entry]),
+                    "entries": [entry],
                 }
             ],
             "delete_uris": [],
@@ -995,6 +997,7 @@ async def test_native_answer_propagation_updates_existing_person_anchor(setup):
         strict_extract_errors=True,
         archive_uri=ARCHIVE,
         question_context={
+            "questionId": "00000000-0000-4000-8000-000000000001",
             "subject": {"kind": "person", "id": "stable-person", "memoryUri": PERSON}
         },
     )
@@ -1013,6 +1016,8 @@ async def test_native_matter_question_routes_to_server_resolved_page(setup, monk
         "topicKey": "atlas_owner",
         "text": "Is Atlas your startup?",
         "sourceRefs": [INITIAL_REF],
+        "context": {"summary": "Ethan references Atlas", "uncertainty": "What is the user's relationship to Atlas?", "knownFacts": [], "candidates": []},
+        "evidence": [{"sourceRef": INITIAL_REF, "quote": "previous Atlas proposal"}],
     }
     final = json.dumps(
         {
@@ -1021,11 +1026,10 @@ async def test_native_matter_question_routes_to_server_resolved_page(setup, monk
             "events": [],
             "questions": [
                 {
-                    "page_id": 100,
                     "subjectKind": "matter",
                     "subjectId": "atlas",
                     "subjectMemoryUri": matter,
-                    "entries": json.dumps([proposal]),
+                    "entries": [proposal],
                 }
             ],
             "delete_uris": [],

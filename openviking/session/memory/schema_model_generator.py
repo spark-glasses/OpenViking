@@ -248,6 +248,10 @@ class SchemaModelGenerator:
         # )
 
         for mt in enabled_memory_types:
+            if mt.memory_type == "questions":
+                from openviking.session.memory.question_contract import QuestionOperations
+                field_definitions["questions"] = (List[QuestionOperations], Field(default_factory=list))
+                continue
             flat_model = self.create_flat_data_model(mt, role_scope)
             # Always use List to support multiple users' memories.
             field_definitions[mt.memory_type] = (

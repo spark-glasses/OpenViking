@@ -117,6 +117,8 @@ def test_context_owner_and_tools(env):
         "readContext",
         "searchSources",
         "readSource",
+        "listProjects",
+        "ensureProject",
         "searchPeople",
     }
     assert {s.memory_type for s in provider.get_memory_schemas(env.ctx)} <= {
@@ -126,6 +128,7 @@ def test_context_owner_and_tools(env):
         "entities",
         "events",
         "questions",
+        "projects",
     }
     with pytest.raises(ValueError):
         env.provider(
@@ -139,6 +142,28 @@ def test_context_owner_and_tools(env):
     )
 
 
+@pytest.mark.asyncio
+async def test_question_cannot_cite_unread_frozen_context(env):
+    from openviking.session.memory.question_context import QuestionContext
+    quote = "Bob explicitly introduced himself as the founder."
+    provider = env.provider(messages=[{
+        "id": "user-1", "role": "user", "sourceRef": REF,
+        "content": "a" * 14000 + quote + "z" * 4000,
+    }])
+    context = QuestionContext(provider)
+    await provider.prefetch()
+    def operations():
+        return ResolvedOperations(upsert_operations=[ResolvedOperation(
+            memory_type="questions", uris=[], memory_fields={"subjectKind": "self", "entries": [{
+                "topicKey": "founder", "text": "Which project did Bob found?",
+                "context": {"summary": "Bob described his role", "uncertainty": "Project unclear"},
+                "sourceRefs": [REF], "evidence": [{"sourceRef": REF, "quote": quote}],
+                "importance": {"level": "later", "reason": "Background"},
+            }]})], delete_file_contents=[], errors=[])
+    with pytest.raises(ValueError, match="not supplied/read"):
+        context.validate(operations())
+    await provider._execute("readContext", {"messageIndex": 0})
+    context.validate(operations())
 
 
 @pytest.mark.asyncio
