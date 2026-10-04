@@ -191,12 +191,17 @@ def delivery_id(item):
 
 
 def delivery_cycle_id(item):
-    """Only an explicit user deferral starts a new presentation opportunity.
+    """Presentation retries share a cycle; a later chat may ask an open question.
 
-    New evidence, partial answers and re-extraction never renew this cycle. The
-    application owns scheduling policy; this identifier only makes receipts and
-    retries stable across process restarts and subject moves.
+    A presentation request is not user feedback or proof of display. Source
+    extraction alone never creates a new cycle. Scheduling remains in Spark.
     """
+    presentation = next(iter(reversed(item.get("presentations", []))), None)
+    if presentation and not any(
+        event["action"] == "deferred"
+        for event in item.get("events", [])[presentation["eventCount"]:]
+    ):
+        return presentation["cycleId"]
     latest_deferral = next(
         (
             event["eventId"]
@@ -641,10 +646,12 @@ class QuestionStore:
                 item.get("notBefore") and item["notBefore"] > now
             ):
                 continue
-            if any(e["action"] == "asked" for e in item["events"]):
-                asked = [e for e in item["events"] if e["action"] == "asked"]
-                if not asked or asked[-1]["conversationId"] != conversation_id:
-                    continue
+            if conversation_id and (
+                any(p["conversationId"] == conversation_id for p in item.get("presentations", []))
+                or any(e["action"] == "asked" and e.get("conversationId") == conversation_id
+                       for e in item["events"])
+            ):
+                continue
             score = int(item["subject"]["id"] in related_subject_ids) * 10 + int(
                 item["subject"]["kind"] == "self"
             )
@@ -699,6 +706,47 @@ class QuestionStore:
         if received > datetime.fromisoformat(now_iso()):
             raise InvalidArgumentError("Delivery receipt cannot be in the future")
         return {**receipt, "receivedAt": at}
+
+    async def prepare_presentation(self, question_id, conversation_id, turn_id, expected_cycle_id, expected_revision):
+        """Reserve an askQuestion invocation, without inventing a reply or display.
+
+        At most one cycle per conversation. A retry after a network failure
+        reuses that cycle, while a stale caller cannot roll back a newer one.
+        Unanswered = a presentation without subsequent user feedback; there is
+        no synthetic no-response answer and no session-end lifecycle mutation.
+        """
+        async with owner_lock(self.ctx):
+            page, item = await self._find(question_id)
+            if item["state"] != "open" or item.get("asking") == "muted" or (
+                item.get("notBefore") and item["notBefore"] > now_iso()
+            ):
+                raise InvalidArgumentError("Question is not currently askable")
+            presentations = item.get("presentations", [])
+            previous = next((p for p in presentations if p["conversationId"] == conversation_id), None)
+            current_cycle = delivery_cycle_id(item)
+            if previous:
+                if previous != presentations[-1] or previous["cycleId"] != current_cycle:
+                    raise InvalidArgumentError("Question was already presented in this conversation")
+                return self._public(page, item)
+            if current_cycle != expected_cycle_id or page.extra_fields.get("revision", 0) != expected_revision:
+                raise InvalidArgumentError("Question presentation cycle changed; refresh before asking")
+            if any(e["action"] == "asked" and e.get("conversationId") == conversation_id
+                   for e in item["events"]):
+                raise InvalidArgumentError("Question was already presented in this conversation")
+            # Reuse the initial cycle so a concurrent proactive producer and the
+            # first live presenter still converge on one delivery ledger row.
+            cycle = (str(uuid5(NAMESPACE_URL, f"question-chat:{question_id}:{conversation_id}"))
+                     if presentations or any(e["action"] == "asked" for e in item["events"])
+                     else current_cycle)
+            item.setdefault("presentations", []).append({"conversationId": conversation_id,
+                "turnId": turn_id, "cycleId": cycle, "at": now_iso(), "eventCount": len(item["events"])})
+            item["state"], item["asking"] = "open", "allowed"
+            item.pop("notBefore", None)
+            item["updatedAt"] = now_iso()
+            await self._save(page)
+            result = self._public(page, item)
+        await self.refresh(page.uri)
+        return result
 
     async def record(self, data):
         action = data["action"]
@@ -777,7 +825,18 @@ class QuestionStore:
                     normalize(text) in normalize(data["evidenceText"]) for text in valid_wordings
                 ):
                     raise InvalidArgumentError("Asked evidence must contain the actual question")
-                already_asked = any(e["action"] == "asked" for e in item["events"][next((i + 1 for i in range(len(item["events"]) - 1, -1, -1) if item["events"][i]["action"] == "deferred"), 0):])
+                last_presentation = next(iter(reversed(item.get("presentations", []))), None)
+                cycle_start = max(
+                    last_presentation["eventCount"] if last_presentation else 0,
+                    next((i + 1 for i in range(len(item["events"]) - 1, -1, -1)
+                          if item["events"][i]["action"] == "deferred"), 0),
+                )
+                already_asked = any(
+                    e["action"] == "asked" and (
+                        not e.get("deliveryReceipt") or
+                        e["deliveryReceipt"]["deliveryId"] == delivery_cycle_id(item)
+                    ) for e in item["events"][cycle_start:]
+                )
                 if item["state"] != "open" or item.get("asking") == "muted" or already_asked or (
                     not receipt and item.get("notBefore") and item["notBefore"] > now_iso()
                 ):
@@ -893,7 +952,7 @@ class QuestionStore:
                 item["asking"] = "muted"
             elif action == "deferred":
                 item["asking"] = "snoozed"
-            elif action != "asked":
+            else:
                 item["asking"] = "allowed"
             if action == "deferred":
                 item["notBefore"] = (

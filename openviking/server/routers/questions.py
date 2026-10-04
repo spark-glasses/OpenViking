@@ -112,6 +112,23 @@ async def record(body: RecordRequest, ctx: RequestContext = Depends(get_request_
     return Response(status="ok", result=result)
 
 
+class PreparePresentationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    questionId: UUID
+    conversationId: str = Field(min_length=1, max_length=200)
+    turnId: str = Field(min_length=1, max_length=200)
+    expectedCycleId: UUID
+    expectedRevision: int = Field(ge=0)
+
+
+@router.post("/prepare-presentation")
+async def prepare_presentation(body: PreparePresentationRequest, ctx: RequestContext = Depends(get_request_context)):
+    question = await store(ctx).prepare_presentation(
+        str(body.questionId), body.conversationId, body.turnId, str(body.expectedCycleId), body.expectedRevision
+    )
+    return Response(status="ok", result={"question": question})
+
+
 class EmailIdentityRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     clusterId: UUID

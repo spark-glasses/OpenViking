@@ -138,8 +138,8 @@ async def test_candidate_is_not_asked_and_duplicate_message_is_idempotent(setup)
     assert (await store.record(asked))["duplicate"] is True
     with pytest.raises(InvalidArgumentError):
         await store.record(event(q, "asked", messageId="another-ask", conversationId="chat-2"))
-    assert await store.candidates(conversation_id="chat-2") == []
-    assert len(await store.candidates(conversation_id="chat-1")) == 1
+    assert len(await store.candidates(conversation_id="chat-2")) == 1
+    assert await store.candidates(conversation_id="chat-1") == []
 
 
 @pytest.mark.asyncio
@@ -950,3 +950,73 @@ async def test_email_identity_endpoint_keeps_unknown_people_out_of_people_and_de
     await store.record(event(records[0], "dismissed"))
     await router.discover_email_identity(body, ctx)
     assert (await store.get(records[0]["questionId"]))["asking"] == "muted"
+
+
+@pytest.mark.asyncio
+async def test_presentation_without_feedback_is_open_and_can_be_asked_in_next_chat(setup):
+    fs, ctx, store = setup
+    q = await create(store, ctx)
+    prepared = await store.prepare_presentation(q["questionId"], "chat-1", "turn-1", q["deliveryCycleId"], q["revision"])
+    assert prepared["state"] == "open" and prepared["asking"] == "allowed"
+    assert prepared["events"] == [] and prepared["answers"] == []
+    assert prepared["deliveryCycleId"] == q["deliveryCycleId"]
+    assert (await store.prepare_presentation(q["questionId"], "chat-1", "turn-1", q["deliveryCycleId"], q["revision"])) == prepared
+    assert await store.candidates(conversation_id="chat-1") == []
+    assert len(await store.candidates(conversation_id="chat-2")) == 1
+    following = await store.prepare_presentation(q["questionId"], "chat-2", "turn-2", prepared["deliveryCycleId"], prepared["revision"])
+    assert following["deliveryCycleId"] != prepared["deliveryCycleId"]
+    assert following["answers"] == [] and following["events"] == []
+    with pytest.raises(InvalidArgumentError):
+        await store.prepare_presentation(q["questionId"], "chat-1", "turn-1", prepared["deliveryCycleId"], prepared["revision"])
+    assert (await QuestionStore(fs, ctx).get(q["questionId"]))["deliveryCycleId"] == following["deliveryCycleId"]
+
+
+@pytest.mark.asyncio
+async def test_later_chat_receipt_does_not_create_an_answer_and_old_receipts_cannot_reset_state(setup, clock):
+    _, ctx, store = setup
+    q = await create(store, ctx)
+    q = await store.prepare_presentation(q["questionId"], "chat-1", "turn-1", q["deliveryCycleId"], q["revision"])
+    old_receipt = cycle_event(q)
+    q = (await store.record(old_receipt))["question"]
+    q = await store.prepare_presentation(q["questionId"], "chat-2", "turn-2", q["deliveryCycleId"], q["revision"])
+    new_receipt = cycle_event(q, messageId="asked-2")
+    new_receipt["conversationId"] = "chat-2"
+    new_receipt["messageId"] = "asked-2"
+    next_asked = (await store.record(new_receipt))["question"]
+    assert next_asked["state"] == "open" and next_asked["asking"] == "allowed"
+    assert len(next_asked["events"]) == 2 and next_asked["answers"] == []
+    assert (await store.record(old_receipt))["duplicate"]
+    answered = (await store.record(event(q, "resolved", conversationId="chat-2")))["question"]
+    assert answered["state"] == "resolved" and answered["asking"] == "allowed"
+    assert (await store.record(new_receipt))["question"]["state"] == "resolved"
+    with pytest.raises(InvalidArgumentError):
+        await store.prepare_presentation(q["questionId"], "chat-3", "turn-3", q["deliveryCycleId"], q["revision"])
+
+
+@pytest.mark.asyncio
+async def test_explicit_refusal_mutes_without_solving_and_cannot_be_reopened_by_asking(setup):
+    _, ctx, store = setup
+    q = await create(store, ctx)
+    q = await store.prepare_presentation(q["questionId"], "chat-1", "turn-1", q["deliveryCycleId"], q["revision"])
+    refused = (await store.record(event(q, "dismissed", evidenceText="This question is bad; do not ask me again.")))["question"]
+    assert refused["state"] == "open" and refused["asking"] == "muted"
+    assert len(refused["answers"]) == 1
+    assert not refused.get("propagation")
+    assert await store.candidates(conversation_id="chat-2") == []
+    with pytest.raises(InvalidArgumentError):
+        await store.prepare_presentation(q["questionId"], "chat-2", "turn-2", q["deliveryCycleId"], q["revision"])
+
+
+@pytest.mark.asyncio
+async def test_concurrent_presentation_reservations_reuse_a_cycle_and_reject_stale_takeover(setup):
+    _, ctx, store = setup
+    q = await create(store, ctx)
+    args = (q["questionId"], "chat-1", "turn-1", q["deliveryCycleId"], q["revision"])
+    results = await asyncio.gather(*(store.prepare_presentation(*args) for _ in range(4)))
+    assert len({item["deliveryCycleId"] for item in results}) == 1
+    assert len(results[-1]["presentations"]) == 1
+    q = results[-1]
+    next_q = await store.prepare_presentation(q["questionId"], "chat-2", "turn-2", q["deliveryCycleId"], q["revision"])
+    with pytest.raises(InvalidArgumentError):
+        await store.prepare_presentation(q["questionId"], "chat-3", "turn-3", q["deliveryCycleId"], q["revision"])
+    assert (await store.get(q["questionId"]))["deliveryCycleId"] == next_q["deliveryCycleId"]
