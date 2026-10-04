@@ -439,6 +439,11 @@ class ResourceMemoryLinkService:
         recursive: bool = False,
     ) -> MemoryUpdateResult:
         viking_fs = self._get_viking_fs()
+        from openviking.session.memory.profile_store import managed_profile_uri
+        if managed_profile_uri(memory_uri, ctx):
+            # Preserve the user's exact correction and historical provenance even
+            # if a cited resource is removed; never bypass ProfileStore here.
+            return MemoryUpdateResult()
         current = memory_file
         try:
             raw = await viking_fs.read_file(memory_uri, ctx=ctx)

@@ -93,7 +93,11 @@ async def write_stored_links(
     for uri, link_groups in file_links.items():
         from openviking.session.memory.question_store import is_question_uri
 
-        if is_question_uri(uri, ctx):
+        from openviking.session.memory.profile_store import ProfileStore, profile_uri, managed_profile_uri
+        if uri == profile_uri(ctx):
+            await ProfileStore(viking_fs, ctx).add_links(link_groups["links"], link_groups["backlinks"])
+            continue
+        if is_question_uri(uri, ctx) or managed_profile_uri(uri, ctx):
             continue
         from openviking.session.memory.project_paths import project_id_from_uri
         from openviking.session.memory.project_store import ProjectStore
@@ -873,6 +877,7 @@ class MemoryUpdater:
                 or uri.endswith("/.overview.md")
                 or uri.endswith("/.abstract.md")
                 or uri.endswith("/questions.md")
+                or uri.endswith("/memories/profile.md")
                 or "/memories/projects/" in uri
             ):
                 continue
@@ -896,6 +901,13 @@ class MemoryUpdater:
 
         from openviking.session.memory.project_store import ProjectStore
         from openviking.session.memory.question_store import memory_root
+
+        from openviking.session.memory.profile_store import ProfileStore, managed_profile_uri
+        if resolved_op.memory_type == "profile":
+            await ProfileStore(viking_fs, ctx, self._vikingdb).apply_native(resolved_op, self._registry.get("profile"))
+            return
+        if any(managed_profile_uri(uri, ctx) for uri in resolved_op.uris):
+            raise ValueError("Profile requires its protected write entry point")
 
         if resolved_op.memory_type == "projects":
             if len(resolved_op.uris) != 1:
@@ -1082,6 +1094,9 @@ class MemoryUpdater:
 
         if is_question_uri(uri, ctx):
             raise ValueError("Canonical question history cannot be deleted by extraction")
+        from openviking.session.memory.profile_store import managed_profile_uri
+        if managed_profile_uri(uri, ctx):
+            raise ValueError("Profile cannot be deleted by memory extraction")
         if uri.startswith(memory_root(ctx) + "projects/"):
             raise ValueError("Archive a Project using its structured status; do not delete its identity files")
         viking_fs = self._get_viking_fs()

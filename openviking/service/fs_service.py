@@ -185,6 +185,10 @@ class FSService:
     ) -> Optional[Dict[str, Any]]:
         """Remove resource."""
         uri = validate_viking_uri(uri)
+        from openviking.session.memory.profile_store import protected_profile_path
+        from openviking_cli.exceptions import InvalidArgumentError
+        if protected_profile_path(uri, ctx):
+            raise InvalidArgumentError("Edit Profile sections through the Profile API")
         viking_fs = self._ensure_initialized()
         cleanup_result: Optional[Dict[str, Any]] = None
         context_type = context_type_for_uri(uri)
@@ -371,6 +375,10 @@ class FSService:
         """Move resource."""
         from_uri = validate_viking_uri(from_uri, field_name="from_uri")
         to_uri = validate_viking_uri(to_uri, field_name="to_uri")
+        from openviking.session.memory.profile_store import protected_profile_path
+        from openviking_cli.exceptions import InvalidArgumentError
+        if protected_profile_path(from_uri, ctx) or protected_profile_path(to_uri, ctx):
+            raise InvalidArgumentError("Profile identity and history cannot be moved or replaced")
         viking_fs = self._ensure_initialized()
         await viking_fs.mv(from_uri, to_uri, ctx=ctx)
 
@@ -424,7 +432,13 @@ class FSService:
         from openviking.session.memory.question_store import memory_root
         from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
         project_id = project_id_from_uri(uri, memory_root(ctx))
-        if project_id:
+        from openviking.session.memory.profile_store import ProfileStore, profile_uri, managed_profile_uri
+        if uri == profile_uri(ctx):
+            content = (await ProfileStore(viking_fs, ctx, self._vikingdb).get())["content"]
+        elif managed_profile_uri(uri, ctx):
+            from openviking_cli.exceptions import InvalidArgumentError
+            raise InvalidArgumentError("Profile recovery journals are internal")
+        elif project_id:
             content = MemoryFileUtils.write(await ProjectStore(viking_fs, ctx, self._vikingdb).get(project_id))
         elif uri.endswith("/project.json") and (project_id := project_id_from_uri(uri.removesuffix("project.json") + "memory.md", memory_root(ctx))):
             import json

@@ -842,7 +842,7 @@ class VikingFS:
         )
 
         if resolved_engine == "fs":
-            return await self._grep_fs(
+            result = await self._grep_fs(
                 uri=uri,
                 pattern=pattern,
                 exclude_uri=exclude_uri,
@@ -852,7 +852,7 @@ class VikingFS:
                 ctx=ctx,
             )
         else:  # "vikingdb_then_fs"
-            return await self._grep_vikingdb_then_fs(
+            result = await self._grep_vikingdb_then_fs(
                 uri=uri,
                 pattern=pattern,
                 exclude_uri=exclude_uri,
@@ -861,6 +861,28 @@ class VikingFS:
                 level_limit=level_limit,
                 ctx=ctx,
             )
+
+        # Profile history lives in file metadata. Neither old interpretations nor
+        # an interrupted-write journal may appear as ordinary current memory.
+        from openviking.session.memory.profile_store import profile_uri, managed_profile_uri
+        from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+        real_ctx = self._ctx_or_default(ctx)
+        visible_lines = None
+        matches = []
+        for match in result.get("matches", []):
+            target = match.get("uri", "")
+            if managed_profile_uri(target, real_ctx):
+                if target != profile_uri(real_ctx):
+                    continue
+                if visible_lines is None:
+                    raw = await self.read_file(target, ctx=real_ctx)
+                    visible_lines = MemoryFileUtils.read(raw, uri=target).content.splitlines()
+                line = match.get("line", 0)
+                if not isinstance(line, int) or not 1 <= line <= len(visible_lines):
+                    continue
+                match = {**match, "content": visible_lines[line - 1]}
+            matches.append(match)
+        return {**result, "matches": matches, "count": len(matches), "match_count": len(matches)}
 
     async def _resolve_grep_engine(
         self, engine: GrepEngine, uri: str, ctx, switch_to_remote_threshold: int = 10000

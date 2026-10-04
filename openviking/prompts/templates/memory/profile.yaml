@@ -37,6 +37,14 @@ description: |
     details to fill out a profile, or store passwords or authentication secrets.
 
   # Updating
+  - The Profile is a managed document. Preserve its Identity section exactly.
+    Sections listed as protectedSections were explicitly edited by the user:
+    preserve their exact title/content and never recreate deleted sections.
+    Do not bypass a correction by creating another section with the same claim.
+  - Prior interpretations in a correction review are superseded history, not
+    current facts. A correction is effective without an explanation. Ask an
+    ordinary self question only if a useful unresolved distinction remains;
+    do not ask for justification of every edit or restore the earlier view.
   - Read the existing profile and integrate new information into it. Preserve
     supported details from earlier conversations even when they are not
     mentioned again. Absence from the latest conversation is not a correction.

@@ -72,6 +72,9 @@ class ContentWriteCoordinator:
         from openviking.session.memory.question_store import is_question_uri
         from openviking.session.memory.question_store import memory_root
 
+        from openviking.session.memory.profile_store import managed_profile_uri
+        if managed_profile_uri(normalized_uri, ctx):
+            raise InvalidArgumentError("Profile must be updated through ProfileStore")
         if normalized_uri.startswith(memory_root(ctx) + "projects/"):
             raise InvalidArgumentError("Project files must be updated through ProjectStore or QuestionStore")
 

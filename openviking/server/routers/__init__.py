@@ -1,3 +1,4 @@
+from openviking.server.routers.user_profile import router as user_profile_router
 # Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
 # SPDX-License-Identifier: AGPL-3.0
 """OpenViking HTTP Server routers."""

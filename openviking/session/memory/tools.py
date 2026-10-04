@@ -184,7 +184,12 @@ class MemoryReadTool(MemoryTool):
             from openviking.session.memory.project_paths import project_id_from_uri
             from openviking.session.memory.question_store import memory_root
             project_id = project_id_from_uri(uri, memory_root(ctx.request_ctx))
-            if project_id:
+            from openviking.session.memory.profile_store import ProfileStore, profile_uri, managed_profile_uri
+            if uri == profile_uri(ctx.request_ctx):
+                mf = await ProfileStore(ctx.viking_fs, ctx.request_ctx).read()
+            elif managed_profile_uri(uri, ctx.request_ctx):
+                raise ValueError("Profile recovery journals are not model context")
+            elif project_id:
                 from openviking.session.memory.project_store import ProjectStore
                 mf = await ProjectStore(ctx.viking_fs, ctx.request_ctx).get(project_id)
             else:
@@ -195,6 +200,15 @@ class MemoryReadTool(MemoryTool):
             llm_result = mf.to_metadata()
             llm_result.pop("links", None)
             llm_result.pop("backlinks", None)
+            profile = llm_result.pop("profileDocument", None)
+            if profile:
+                # Old interpretations belong in explicit revision review, not in
+                # ordinary retrieval as if they were current user facts.
+                llm_result["protectedSections"] = [
+                    {"title": b["title"], "deleted": b.get("deleted", False)}
+                    for b in profile["blocks"] if b["authority"] == "user"
+                ]
+
             # Annotate with page_id for link extraction
             if ctx and ctx.page_id_map:
                 page_id = ctx.page_id_map.get_page_id(uri)
