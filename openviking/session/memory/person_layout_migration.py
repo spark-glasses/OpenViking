@@ -48,6 +48,8 @@ def rewrite_document(raw, old_uri, new_uri, moves):
             absolute = "viking://" + posixpath.normpath(posixpath.join(
                 posixpath.dirname(old_uri.removeprefix("viking://")), path))
             destination = moves.get(absolute, absolute)
+            if old_uri == new_uri and destination == absolute:
+                return match.group(0)
             relative = posixpath.relpath(destination.removeprefix("viking://"),
                                          posixpath.dirname(new_uri.removeprefix("viking://")))
             return match.group(1) + relative + (sep + fragment if sep else "") + ")"

@@ -7,7 +7,6 @@ Session Extract Context Provider - 会话提取 Provider 实现
 """
 
 import json
-import hashlib
 import os
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -34,7 +33,6 @@ from openviking.session.memory.memory_type_registry import (
     resolve_memory_templates_dir,
 )
 from openviking.session.memory.person_identity import load_active_people
-from openviking.session.memory import project_tools as _project_tools  # registers shared tools
 from openviking.session.memory.tools import (
     add_tool_call_pair_to_messages,
     get_tool,
@@ -708,17 +706,6 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
         self,
         tool_call,
     ) -> Any:
-        if tool_call.name in ("listProjects", "ensureProject"):
-            from openviking.session.memory.project_store import ProjectStore
-            store = ProjectStore(self._viking_fs, self._ctx)
-            args = tool_call.arguments
-            if tool_call.name == "listProjects":
-                return await store.list(args.get("cursor"), args.get("limit", 50))
-            # Replaying this extraction yields the same anchor. A different
-            # conversation can create a distinct, same-named undertaking.
-            identity = json.dumps([getattr(m, "id", None) for m in self.messages or []])
-            key = hashlib.sha256(identity.encode()).hexdigest() + ":" + args["name"].casefold()
-            return await store.ensure(name=args["name"], create_key=key)
         tool = get_tool(tool_call.name)
         if not tool:
             return {"error": f"Unknown tool: {tool_call.name}"}
@@ -751,8 +738,8 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
 
     def get_tools(self) -> List[str]:
         """获取可用的工具列表"""
-        if self._ctx and any(s.memory_type == "projects" for s in self.get_memory_schemas(self._ctx)):
-            return ["read", "search", "listProjects", "ensureProject"]
+        if self._ctx and any(s.memory_type == "focuses" for s in self.get_memory_schemas(self._ctx)):
+            return ["read", "search"]
         if self._canonical_people.records:
             # Exact identity prefetch is bounded, so other relevant people must
             # remain discoverable on demand even with eager semantic prefetch.

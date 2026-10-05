@@ -164,7 +164,7 @@ async def test_casual_conversation_discovers_people_without_save_memory_or_embed
     }
     assert {p["memoryUri"] for p in env.people[:2]} <= reads
     assert env.people[2]["memoryUri"] not in reads
-    assert set(provider.get_tools()) == {"read", "search", "listProjects", "ensureProject"}
+    assert set(provider.get_tools()) == {"read", "search"}
     assert MemoryTypeRegistry().get("people").filename_template == "{{ anchorId }}/memory.md"
 
 

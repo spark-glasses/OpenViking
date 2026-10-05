@@ -157,7 +157,7 @@ def test_email_scope_and_anchor_stay_stable_with_shared_people_schema(setup):
         "people",
         "entities",
         "events",
-        "projects",
+        "focuses",
         "questions",
     }
 

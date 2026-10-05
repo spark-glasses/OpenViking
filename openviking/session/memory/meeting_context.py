@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from openviking.session.memory.person_paths import person_anchor_from_uri
 from openviking.core.namespace import user_space_fragment
 
-MEETING_MEMORY_TYPES = frozenset({"people", "meetings", "entities", "events", "projects", "questions"})
+MEETING_MEMORY_TYPES = frozenset({"people", "meetings", "entities", "events", "focuses", "questions"})
 
 
 class MeetingPerson(BaseModel):

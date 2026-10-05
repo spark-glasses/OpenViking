@@ -6,7 +6,7 @@ description: |
   Preserve historical progress, decisions, People links and original source citations.
 directory: "viking://user/{{ user_space }}/memories/projects"
 filename_template: "{{ projectId }}/memory.md"
-enabled: true
+enabled: false
 embedding_template: "{{ content }}"
 fields:
   - name: projectId

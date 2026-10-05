@@ -240,8 +240,8 @@ async def apply_question_write(body: WriteRequest, ctx: RequestContext):
     fields = body.operation.model_dump(exclude_none=True)
     uri = fields.get("subjectMemoryUri")
     identifier = fields.get("subjectId")
-    if not uri and identifier and fields["subjectKind"] in ("person", "project"):
-        directory = "people" if fields["subjectKind"] == "person" else "projects"
+    if not uri and identifier and fields["subjectKind"] in ("person", "project", "focus"):
+        directory = {"person": "people", "project": "projects", "focus": "focuses"}[fields["subjectKind"]]
         uri = memory_root(ctx) + f"{directory}/{identifier}/memory.md"
         fields["subjectMemoryUri"] = uri
     uris = {uri} if uri else set()

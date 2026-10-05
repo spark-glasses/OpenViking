@@ -432,12 +432,21 @@ class FSService:
         from openviking.session.memory.question_store import memory_root
         from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
         project_id = project_id_from_uri(uri, memory_root(ctx))
+        from openviking.session.memory.focus_paths import focus_id_from_uri
+        from openviking.session.memory.focus_store import FocusStore
+        focus_id = focus_id_from_uri(uri, memory_root(ctx))
         from openviking.session.memory.profile_store import ProfileStore, profile_uri, managed_profile_uri
         if uri == profile_uri(ctx):
             content = (await ProfileStore(viking_fs, ctx, self._vikingdb).get())["content"]
         elif managed_profile_uri(uri, ctx):
             from openviking_cli.exceptions import InvalidArgumentError
             raise InvalidArgumentError("Profile recovery journals are internal")
+        elif focus_id:
+            content = MemoryFileUtils.write(await FocusStore(viking_fs, ctx, self._vikingdb).get(focus_id))
+        elif uri.endswith("/focus.json") and (focus_id := focus_id_from_uri(uri.removesuffix("focus.json") + "memory.md", memory_root(ctx))):
+            import json
+            page = await FocusStore(viking_fs, ctx, self._vikingdb).get(focus_id)
+            content = json.dumps(page.extra_fields, ensure_ascii=False, indent=2)
         elif project_id:
             content = MemoryFileUtils.write(await ProjectStore(viking_fs, ctx, self._vikingdb).get(project_id))
         elif uri.endswith("/project.json") and (project_id := project_id_from_uri(uri.removesuffix("project.json") + "memory.md", memory_root(ctx))):

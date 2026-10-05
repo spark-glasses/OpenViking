@@ -138,7 +138,9 @@ async def apply_migration(fs, ctx, plan, journal_path, db=None):
         await fs.write_file(file["uri"], file["after"], ctx=ctx)
         if await fs.read_file(file["uri"], ctx=ctx) != file["after"]:
             raise RuntimeError("Migration verification failed")
-        if db is not None and file["uri"].endswith(".md"):
+        # Derived directory abstracts/overviews are not L2 memory documents.
+        # Their filename deliberately has no canonical people/entity schema.
+        if db is not None and file["uri"].endswith(".md") and not file["uri"].rsplit("/", 1)[-1].startswith("."):
             from openviking.session.memory.memory_updater import MemoryUpdater
 
             indexed = await MemoryUpdater.refresh_file_embedding(

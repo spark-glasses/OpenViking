@@ -117,8 +117,6 @@ def test_context_owner_and_tools(env):
         "readContext",
         "searchSources",
         "readSource",
-        "listProjects",
-        "ensureProject",
         "searchPeople",
     }
     assert {s.memory_type for s in provider.get_memory_schemas(env.ctx)} <= {
@@ -128,7 +126,7 @@ def test_context_owner_and_tools(env):
         "entities",
         "events",
         "questions",
-        "projects",
+        "focuses",
     }
     with pytest.raises(ValueError):
         env.provider(

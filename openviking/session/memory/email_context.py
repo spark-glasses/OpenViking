@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from openviking.core.namespace import user_space_fragment
 
-EMAIL_MEMORY_TYPES = frozenset({"people", "entities", "events", "projects", "questions"})
+EMAIL_MEMORY_TYPES = frozenset({"people", "entities", "events", "focuses", "questions"})
 
 
 class EmailContext(BaseModel):

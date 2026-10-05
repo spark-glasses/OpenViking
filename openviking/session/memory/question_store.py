@@ -57,6 +57,9 @@ def question_uri(ctx, subject):
     if kind == "project":
         from openviking.session.memory.project_paths import project_questions_uri
         return project_questions_uri(ctx, identifier)
+    if kind == "focus":
+        from openviking.session.memory.focus_paths import focus_questions_uri
+        return focus_questions_uri(ctx, identifier)
     if (
         kind not in ("person", "matter")
         or not isinstance(identifier, str)
@@ -73,7 +76,7 @@ def is_question_uri(uri, ctx):
     root = memory_root(ctx)
     return uri in (root + "self/questions.md", root + "unassigned/questions.md") or bool(
         re.fullmatch(
-            re.escape(root) + r"(?:people|projects|matters)/[A-Za-z0-9_-]{1,160}/questions\.md", uri
+            re.escape(root) + r"(?:people|projects|focuses|matters)/[A-Za-z0-9_-]{1,160}/questions\.md", uri
         )
     )
 

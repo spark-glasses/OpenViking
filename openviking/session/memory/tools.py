@@ -184,11 +184,16 @@ class MemoryReadTool(MemoryTool):
             from openviking.session.memory.project_paths import project_id_from_uri
             from openviking.session.memory.question_store import memory_root
             project_id = project_id_from_uri(uri, memory_root(ctx.request_ctx))
+            from openviking.session.memory.focus_paths import focus_id_from_uri
+            focus_id = focus_id_from_uri(uri, memory_root(ctx.request_ctx))
             from openviking.session.memory.profile_store import ProfileStore, profile_uri, managed_profile_uri
             if uri == profile_uri(ctx.request_ctx):
                 mf = await ProfileStore(ctx.viking_fs, ctx.request_ctx).read()
             elif managed_profile_uri(uri, ctx.request_ctx):
                 raise ValueError("Profile recovery journals are not model context")
+            elif focus_id:
+                from openviking.session.memory.focus_store import FocusStore
+                mf = await FocusStore(ctx.viking_fs, ctx.request_ctx, lock_handle=ctx.transaction_handle).get(focus_id)
             elif project_id:
                 from openviking.session.memory.project_store import ProjectStore
                 mf = await ProjectStore(ctx.viking_fs, ctx.request_ctx).get(project_id)

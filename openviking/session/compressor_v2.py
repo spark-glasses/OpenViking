@@ -301,7 +301,7 @@ class SessionCompressorV2:
             from openviking.session.memory.question_answer_context_provider import answer_registry
 
             registry = answer_registry(question_context["subject"])
-            allowed_memory_types = {"people", "profile", "preferences", "entities", "events", "projects"}
+            allowed_memory_types = {"people", "profile", "preferences", "entities", "events", "focuses"}
             allowed_peer_ids = set()
         if memory_update_context:
             from openviking.session.memory.memory_update_context import UPDATE_MEMORY_TYPES
@@ -488,6 +488,7 @@ class SessionCompressorV2:
                             "people",
                             "entities",
                             "events",
+                            "focuses",
                         } and not is_question_uri(uri, ctx):
                             raise ValueError("Recovery target outside meeting memory scope")
             from openviking.session.memory.people_operation import read_gate

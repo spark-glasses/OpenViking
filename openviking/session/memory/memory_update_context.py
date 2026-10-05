@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from openviking.session.memory.question_store import memory_root
 
 UPDATE_MEMORY_TYPES = frozenset(
-    {"profile", "preferences", "people", "entities", "events", "questions", "projects"}
+    {"profile", "preferences", "people", "entities", "events", "questions", "focuses"}
 )
 IDENTIFIER = r"^[A-Za-z0-9_-]+$"
 

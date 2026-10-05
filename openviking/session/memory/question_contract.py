@@ -67,7 +67,7 @@ class QuestionProposal(BaseModel):
 
 class QuestionOperations(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    subjectKind: Literal["self", "person", "project", "matter", "unassigned"]
+    subjectKind: Literal["self", "person", "project", "focus", "matter", "unassigned"]
     subjectId: str = ""
     subjectMemoryUri: str = ""
     entries: list[QuestionProposal] = Field(min_length=1, max_length=20)

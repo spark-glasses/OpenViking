@@ -1,0 +1,34 @@
+memory_type: focuses
+description: |
+  A user's sustained personal priority: a startup, education, health, relationships,
+  or another thing they care about at any granularity. An external workspace or
+  project is an entity, not automatically a Focus. Use listFocuses, reuse an existing
+  identity and read it fully. ensureFocus creates an evidence-backed discovery in
+  forming state; do not infer importance from message volume alone. User-created
+  Focus intent and archived choices are authoritative.
+directory: "viking://user/{{ user_space }}/memories/focuses"
+filename_template: "{{ focusId }}/memory.md"
+enabled: true
+operation_mode: upsert
+embedding_template: "{{ name }}\n{{ userIntent }}\n{{ summary }}\n{{ content }}"
+fields:
+  - name: focusId
+    type: string
+    description: "Stable ID returned by listFocuses or ensureFocus. Never invent it."
+    merge_op: immutable
+  - name: name
+    type: string
+    description: "Human-readable name; preserve a user's chosen name. Empty means unchanged."
+    merge_op: replace
+  - name: summary
+    type: string
+    description: "Up to 600 characters of grounded understanding useful on the Focus card."
+    merge_op: replace
+  - name: status
+    type: string
+    description: "Leave empty unless activating a sufficiently understood forming discovery as active. The lifecycle is forming / active / archived. Only the user archives or restores a Focus. Preserve user choices."
+    merge_op: replace
+  - name: content
+    type: string
+    description: "Cumulative Markdown: supported personal meaning, current concerns, tradeoffs and progress; link People/entities/events and exact source versions. Distinguish the user's intent from evidence-backed interpretation. Uncertain meaning belongs in questions. Do not copy every issue or message."
+    merge_op: patch

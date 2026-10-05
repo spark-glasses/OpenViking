@@ -9,6 +9,7 @@ to the storage system.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -71,6 +72,7 @@ async def write_stored_links(
     ctx: RequestContext,
     viking_fs: Any,
     skip_uris: Optional[set] = None,
+    transaction_handle=None,
 ) -> None:
     """Write StoredLinks to their endpoint files' links/backlinks fields.
 
@@ -103,6 +105,12 @@ async def write_stored_links(
         from openviking.session.memory.project_store import ProjectStore
         from openviking.session.memory.question_store import memory_root
         project_id = project_id_from_uri(uri, memory_root(ctx))
+        from openviking.session.memory.focus_paths import focus_id_from_uri
+        from openviking.session.memory.focus_store import FocusStore
+        focus_id = focus_id_from_uri(uri, memory_root(ctx))
+        if focus_id:
+            await FocusStore(viking_fs, ctx, lock_handle=transaction_handle).add_links(focus_id, link_groups["links"], link_groups["backlinks"])
+            continue
         if project_id:
             await ProjectStore(viking_fs, ctx).add_links(project_id, link_groups["links"], link_groups["backlinks"])
             continue
@@ -879,6 +887,7 @@ class MemoryUpdater:
                 or uri.endswith("/questions.md")
                 or uri.endswith("/memories/profile.md")
                 or "/memories/projects/" in uri
+                or "/memories/focuses/" in uri
             ):
                 continue
             try:
@@ -908,6 +917,15 @@ class MemoryUpdater:
             return
         if any(managed_profile_uri(uri, ctx) for uri in resolved_op.uris):
             raise ValueError("Profile requires its protected write entry point")
+
+        if resolved_op.memory_type == "focuses":
+            from openviking.session.memory.focus_store import FocusStore
+            if len(resolved_op.uris) != 1:
+                raise ValueError("A Focus operation updates exactly one identity")
+            await FocusStore(viking_fs, ctx, self._vikingdb, self._transaction_handle).apply_native(resolved_op, self._registry.get("focuses"))
+            return
+        if resolved_op.memory_type != "questions" and any(uri.startswith(memory_root(ctx) + "focuses/") for uri in resolved_op.uris):
+            raise ValueError("Focuses require their revision-checked entry point")
 
         if resolved_op.memory_type == "projects":
             if len(resolved_op.uris) != 1:
@@ -943,8 +961,9 @@ class MemoryUpdater:
                 content = await viking_fs.read_file(uri, ctx=ctx)
                 if content:
                     old_content = MemoryFileUtils.read(content, uri=uri)
-            except Exception:
-                # File doesn't exist yet, that's okay
+            except (NotFoundError, FileNotFoundError):
+                # Only absence permits creation. Storage failures must not turn
+                # a stale prefetched copy into a successful overwrite.
                 pass
             # Fall back to pre-fetched content if disk read failed
             if old_content is None:
@@ -1086,7 +1105,7 @@ class MemoryUpdater:
             if context_type_for_uri(uri) != "memory"
         }
         skip = upserted_uris | (deleted_uris or set()) | non_memory_endpoints
-        await write_stored_links(resolved_links, ctx, viking_fs, skip_uris=skip)
+        await write_stored_links(resolved_links, ctx, viking_fs, skip_uris=skip, transaction_handle=self._transaction_handle)
 
     async def _apply_delete(self, uri: str, ctx: RequestContext) -> None:
         """Apply delete operation (uri is already a string)."""
@@ -1097,6 +1116,8 @@ class MemoryUpdater:
         from openviking.session.memory.profile_store import managed_profile_uri
         if managed_profile_uri(uri, ctx):
             raise ValueError("Profile cannot be deleted by memory extraction")
+        if uri.startswith(memory_root(ctx) + "focuses/"):
+            raise ValueError("Focuses are archived by the user, never deleted by extraction")
         if uri.startswith(memory_root(ctx) + "projects/"):
             raise ValueError("Archive a Project using its structured status; do not delete its identity files")
         viking_fs = self._get_viking_fs()
@@ -1155,6 +1176,14 @@ class MemoryUpdater:
                 content = await viking_fs.read_file(uri, ctx=ctx) or ""
 
                 mf = MemoryFileUtils.read(content, uri=uri)
+                from openviking.session.memory.focus_paths import focus_id_from_uri, focus_metadata_uri
+                from openviking.session.memory.question_store import memory_root
+                focus_id = focus_id_from_uri(uri, memory_root(ctx))
+                if focus_id:
+                    # Index the authoritative user intent even before the model
+                    # has written a narrative. The caller owns the write lock;
+                    # re-entering FocusStore here would recurse into recovery.
+                    mf.extra_fields.update(json.loads(await viking_fs.read_file(focus_metadata_uri(ctx, focus_id), ctx=ctx)))
                 from openviking.session.memory.utils.link_renderer import LinkRenderer
 
                 abstract = LinkRenderer.strip_all_links(mf.content or "")

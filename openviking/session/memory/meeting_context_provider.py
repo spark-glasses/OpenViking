@@ -114,10 +114,10 @@ def create_meeting_registry(spec):
         str(Path(__file__).parents[2] / "prompts/templates/memory/meeting"), replace=True
     )
     registry.get("meetings").filename_template = f"{spec.meetingId}.md"
-    for name in ("entities", "events", "projects"):
+    for name in ("entities", "events"):
         schema = registry.get(name)
         if schema:
-            schema.description = "Update an existing, fully read related matter only after all speakers in the current material have canonical user confirmations; until then save anonymous understanding in the fixed meetings document."
+            schema.description += " Only propagate after all current speakers have canonical user confirmations; otherwise keep anonymous understanding in the fixed meetings document. Search related matters and fully read a target before editing or creating; verified absence permits creation."
     return registry
 
 
@@ -202,7 +202,7 @@ class MeetingContextProvider(SessionExtractContextProvider):
 
     def instruction(self):
         return """Build durable understanding from recording evidence using the native memory operations.
-This may be one bounded chunk of a longer recording. When chunkIndex is present, completion and coverage describe only that chunk, never the entire meeting. Accumulate the existing meeting understanding and distinguish unread parts.
+This may be one bounded chunk of a longer recording. When chunkIndex is present, completion and coverage describe only that chunk, never the entire meeting. Accumulate the existing meeting understanding and distinguish unread parts. After verifying speaker confirmations, related entities/events may be created from supported evidence following a search and a confirmed-absent read of the exact target; a read error does not establish absence. Existing targets must be fully read before updating them.
 Read the existing meeting, person, and user memories. Calendar people are candidates, not proof that they attended or spoke. Distinguish separate mediaWindows: one recording may contain different meetings. Resolve material references by searching memory and then reading selected original transcripts or emails; search candidates are not complete evidence. Keep within source and tool budgets; explicitly preserve unknown details and unread coverage.
 Before attributing a speaker's statements to a person, use proposeSpeakerAssignments with exact current-recording excerpts and their version/range. A label is local to this recording version. Never equate the same diarization label across recordings. Every new speaker-to-person mapping requires explicit user confirmation, even at confidence 100 or after a clear self-introduction. Confidence, calendar overlap and self-introductions only support a candidate to ask about. UNKNOWN remains unknown. Do not create or merge contacts. Only mappings verified against the canonical resolved question and its recorded user answer authorize attribution within that exact source version/window. Existing inferred metadata or a model-written confirmed label never authorizes a person update. Reuse already-confirmed mappings without asking again.
 Every unconfirmed identity belongs to the meeting matter as a required question, not to a provisional person's facts. Propose short direct questions addressed to the user. A speaker question has purpose=speakerIdentity and scope={speakerRef,startMs,endMs}; sourceRefs includes the actual transcript reference. The provider sets the immutable recording version, evidence window and original meeting-end fact; the application decides when to ask. Other questions default contextual. Read a subject's question page before updating it; preserve IDs, answers and lifecycle. Newly useful meeting understanding can be created before attaching its question; the fixed meeting URI is the only new matter allowed in this task.
@@ -879,6 +879,9 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
             operation.memory_fields["question_subject"] = subject
             self._question_uris.add(uri)
 
+    def has_unconfirmed_speakers(self):
+        return bool(self._unconfirmed_current_speakers())
+
     def validate_operations(self, operations):
         if operations.errors or operations.delete_file_contents or operations.resolved_links:
             raise ValueError("Meeting updates cannot contain errors, deletions or implicit links")
@@ -918,12 +921,12 @@ Frozen recording scope:\n""" + self.spec.model_dump_json()
                     raise ValueError(
                         "Person update requires a verified user-confirmed speaker mapping"
                     )
-                if op.memory_type in ("entities", "events", "projects") and unconfirmed_speakers:
+                if op.memory_type in ("entities", "events", "focuses") and unconfirmed_speakers:
                     raise ValueError(
                         "Related matter updates require user confirmation of all current speakers"
                     )
-                if op.memory_type in ("entities", "events", "projects") and (
-                    uri not in self._fully_read
+                if op.memory_type in ("entities", "events", "focuses") and (
+                    (uri not in self._fully_read and uri not in self._missing_uris)
                     or not uri.startswith(self.root_uri + op.memory_type + "/")
                     or is_question_uri(uri, self._ctx)
                     or uri.startswith(self.root_uri + "events/meetings/")

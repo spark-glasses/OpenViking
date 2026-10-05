@@ -24,6 +24,7 @@ from openviking.session.memory.merge_op import MergeOp
 from openviking.session.memory.schema_model_generator import SchemaModelGenerator
 from openviking.session.memory.question_context import QuestionContext
 from openviking.session.memory.question_contract import QUESTION_INSTRUCTION
+from openviking.session.memory.focus_context import FocusContext, MEMORY_SEMANTICS
 from openviking.session.memory.tools import (
     MEMORY_TOOLS_REGISTRY,
     add_tool_call_pair_to_messages,
@@ -100,6 +101,7 @@ class ExtractLoop:
 
         self._tool_ctx = None
         self._questions = None
+        self._focuses = None
 
     async def run(self) -> Tuple[Optional[Any], List[Dict[str, Any]]]:
         """
@@ -127,6 +129,7 @@ class ExtractLoop:
             self._questions = QuestionContext(self.context_provider)
 
         self._active_schemas = schemas
+        self._focuses = FocusContext(self.context_provider) if self.ctx and any(s.memory_type == "focuses" for s in schemas) else None
 
         # 初始化 schema 生成器（使用 schemas 而非 registry）
         output_language = self.context_provider.get_output_language()
@@ -138,8 +141,13 @@ class ExtractLoop:
 
         # 预计算工具 schemas
         allowed_tools = self.context_provider.get_tools()
+        # ProjectStore is retained only for explicit migration. External projects
+        # are native entities; no extraction may create the retired app domain.
+        allowed_tools = [name for name in allowed_tools if name not in ("listProjects", "ensureProject")]
         if self._questions:
             allowed_tools = [*allowed_tools, *self._questions.tools]
+        if self._focuses:
+            allowed_tools = [*allowed_tools, *self._focuses.tools]
         self._tool_schemas = [
             tool.to_schema()
             for tool in MEMORY_TOOLS_REGISTRY.values()
@@ -199,6 +207,7 @@ class ExtractLoop:
                 "role": "system",
                 "content": f"""
 {self.context_provider.instruction()}
+{MEMORY_SEMANTICS if any(s.memory_type in ('entities', 'events', 'focuses') for s in schemas) else ''}
 {page_id_rules}
 {QUESTION_INSTRUCTION if self._questions else ''}
 {link_rules}
@@ -220,6 +229,8 @@ The final output of the model must strictly follow the JSON Schema format shown 
         # Pre-fetch context via provider
         tool_call_messages = await self.context_provider.prefetch()
         messages.extend(tool_call_messages)
+        if self._focuses:
+            messages.append({"role": "user", "content": json.dumps(await self._focuses.prefetch(), ensure_ascii=False)})
         if self._questions:
             messages.append({"role": "user", "content": json.dumps(await self._questions.prefetch(), ensure_ascii=False)})
 
@@ -297,6 +308,8 @@ The final output of the model must strictly follow the JSON Schema format shown 
                         continue
                     if self._questions:
                         self._questions.validate(final_operations)
+                    if self._focuses:
+                        self._focuses.validate(final_operations)
                     validate_operations = getattr(self.context_provider, "validate_operations", None)
                     if validate_operations is not None:
                         validate_people = getattr(
@@ -622,7 +635,14 @@ The final output of the model must strictly follow the JSON Schema format shown 
         # Execute all tool calls in parallel
         async def execute_single_tool_call(idx: int, tool_call):
             """Execute a single tool call."""
-            if self._questions and tool_call.name in self._questions.tools:
+            if self._focuses and tool_call.name in self._focuses.tools:
+                try:
+                    result = await self._focuses.execute(tool_call.name, tool_call.arguments or {})
+                except ValueError as error:
+                    # Only malformed arguments/evidence are repairable by the model.
+                    # Filesystem, journal and indexing failures must fail the run.
+                    result = {"error": str(error)}
+            elif self._questions and tool_call.name in self._questions.tools:
                 try:
                     result = await self._questions.execute(tool_call.name, tool_call.arguments or {})
                 except (ValueError, KeyError) as error:

@@ -37,7 +37,7 @@ from openviking.server.routers import (
     filesystem_router,
     metrics_router,
     memory_updates_router,
-    projects_router,
+    focuses_router,
     user_profile_router,
     observer_router,
     pack_router,
@@ -547,7 +547,7 @@ def create_app(
     app.include_router(observer_router)
     app.include_router(metrics_router)
     app.include_router(memory_updates_router)
-    app.include_router(projects_router)
+    app.include_router(focuses_router)
     app.include_router(user_profile_router)
     app.include_router(tasks_router)
     app.include_router(user_settings_router)

@@ -7,6 +7,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from openviking.session.memory.person_paths import person_anchor_from_uri
 from openviking.session.memory.project_paths import project_id_from_uri
+from openviking.session.memory.focus_paths import focus_id_from_uri
 from openviking.session.memory.question_store import (
     QuestionStore,
     memory_root,
@@ -45,6 +46,8 @@ def resolve_question_subject(write, fields):
         return {"kind": kind, "id": identifier, "memoryUri": uri}
     if kind == "project" and (identifier := project_id_from_uri(uri, root)):
         return {"kind": kind, "id": identifier, "memoryUri": uri}
+    if kind == "focus" and (identifier := focus_id_from_uri(uri, root)):
+        return {"kind": kind, "id": identifier, "memoryUri": uri}
     if (
         kind == "matter"
         and isinstance(uri, str)
@@ -57,7 +60,7 @@ def resolve_question_subject(write, fields):
         and not any(x in uri for x in ("..", "%", "?", "#", "\\"))
     ):
         return {"kind": kind, "id": uuid5(NAMESPACE_URL, uri).hex, "memoryUri": uri}
-    raise ValueError("Invalid question subject; use its canonical People or Project identity")
+    raise ValueError("Invalid question subject; use its canonical People, Focus or matter identity")
 
 
 class QuestionService:

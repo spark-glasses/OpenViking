@@ -1,8 +1,12 @@
 memory_type: entities
 description: |
-  Third-party entity memory: stable cards for real people, organizations, places,
-  works, media, products, animals/pets, programs, activities, and concepts the
-  user mentions. Store what the entity is and its durable relations.
+  Persistent objects in the user's world: organizations, external projects,
+  workspaces, places, products, works, programs and concepts. Store identity,
+  purpose, current state and durable relations. Existence or message volume
+  does not establish personal importance; that interpretation belongs in Focus.
+  Search existing objects first. Reuse their URI across renames and sources;
+  never merge on display name alone. Events describe what happened to objects,
+  People describe participants, and Focus describes why the user cares.
   Existing application-owned contacts belong to their canonical people anchor,
   never a new entities person card. Resolve ambiguous names before person writes.
 directory: "viking://user/{{ user_space }}/memories/entities"
@@ -33,7 +37,10 @@ fields:
   - name: name
     type: string
     description: |
-      - Entity name in Chinese or English. If English, use lowercase with underscores, max 3 words.
+      Stable path key. Reuse it even when display name changes; put the current
+      display name in the Markdown title. For external objects prefer a key
+      scoped by provider/workspace/object ID when these have actually been read.
+      Never invent external IDs or treat identical names as identity confirmation.
     merge_op: immutable
 
   - name: content
@@ -52,7 +59,9 @@ fields:
       or family status, counts, roles, skills, hobbies, favorite works/artists,
       important possessions, and notable dated facts tied to this entity.
 
-      For people, include a Key Facts section when useful. Do not drop exact names,
+      Preserve provider, workspace, external object identity, sourceRef and
+      sourceVersion when supplied. Link canonical People, events and Focus URIs.
+      Uncertain meaning and identity belong in questions. Do not drop exact names,
       counts, dates, places, titles, family relations, or recurring hobbies just to
       generalize. Keep one-off facts only when they are concrete and likely useful
       for future who/what/when/where/how-long questions.

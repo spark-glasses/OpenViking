@@ -77,6 +77,8 @@ class ContentWriteCoordinator:
             raise InvalidArgumentError("Profile must be updated through ProfileStore")
         if normalized_uri.startswith(memory_root(ctx) + "projects/"):
             raise InvalidArgumentError("Project files must be updated through ProjectStore or QuestionStore")
+        if normalized_uri.startswith(memory_root(ctx) + "focuses/"):
+            raise InvalidArgumentError("Focus files must be updated through FocusStore or QuestionStore")
 
         if is_question_uri(normalized_uri, ctx):
             raise InvalidArgumentError("Question pages must be updated through QuestionStore")
