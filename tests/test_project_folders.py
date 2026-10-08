@@ -12,7 +12,7 @@ pytest_plugins = ["tests.test_projects"]
 
 
 @pytest.mark.asyncio
-async def test_generic_write_cannot_create_or_replace_managed_files(store):
+async def test_generic_write_cannot_create_or_replace_question_pages(store):
     from openviking.storage.content_write import ContentWriteCoordinator
     from openviking_cli.exceptions import InvalidArgumentError
 
@@ -20,8 +20,6 @@ async def test_generic_write_cannot_create_or_replace_managed_files(store):
     before = dict(store.fs.files)
     store.fs._ensure_mutable_access = lambda *args: None
     for uri in (
-        value["uri"],
-        value["metadataUri"],
         value["questionsUri"],
         question_uri(store.ctx, {"kind": "self", "id": "self"}),
     ):

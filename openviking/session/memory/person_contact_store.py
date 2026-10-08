@@ -35,19 +35,90 @@ _NAME = Annotated[str, StringConstraints(max_length=2000)]
 _LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 
+class _ContactEntry(BaseModel):
+    """One entry of a list a contact holds. Field names are the application's."""
+
+    model_config = ConfigDict(extra="forbid")
+    label: _SHORT | None = None
+
+
+class ContactPhone(_ContactEntry):
+    number: str = Field(min_length=1)
+
+
+class ContactEmail(_ContactEntry):
+    address: str = Field(min_length=1)
+
+
+class ContactPostalAddress(_ContactEntry):
+    street: _NAME | None = None
+    city: _SHORT | None = None
+    state: _SHORT | None = None
+    postal_code: _SHORT | None = None
+    country: _SHORT | None = None
+    iso_country_code: _SHORT | None = None
+
+
+class ContactUrl(_ContactEntry):
+    url: str = Field(min_length=1)
+
+
+class ContactSocialProfile(_ContactEntry):
+    service: _SHORT | None = None
+    username: _SHORT | None = None
+    user_identifier: _SHORT | None = None
+    url: _NAME | None = None
+
+
+class ContactInstantMessageAddress(_ContactEntry):
+    service: _SHORT | None = None
+    username: _SHORT | None = None
+
+
+class ContactDate(_ContactEntry):
+    date: _SHORT | None = None
+
+
+class ContactRelation(_ContactEntry):
+    name: _SHORT | None = None
+
+
+class ContactBirthday(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    year: int | None = None
+    month: int | None = None
+    day: int | None = None
+    era: int | None = None
+    calendar: _SHORT | None = None
+
+
 class ContactProfile(BaseModel):
+    """A person's basic information: everything the application's contact holds."""
+
     model_config = ConfigDict(extra="forbid")
     confirmationStatus: Literal["pending", "confirmed"] = "confirmed"
     displayName: str = Field(min_length=1, max_length=2000)
     aliases: list[_NAME] = Field(default_factory=list, max_length=100)
+    artifactId: _SHORT | None = None
     givenName: _SHORT | None = None
     middleName: _SHORT | None = None
     familyName: _SHORT | None = None
+    namePrefix: _SHORT | None = None
+    nameSuffix: _SHORT | None = None
     nickname: _SHORT | None = None
-    emails: list[str] = Field(default_factory=list)
-    phones: list[str] = Field(default_factory=list)
     organization: _SHORT | None = None
+    departmentName: _SHORT | None = None
     jobTitle: _SHORT | None = None
+    contactType: _SHORT | None = None
+    birthday: ContactBirthday | None = None
+    phones: list[ContactPhone] = Field(default_factory=list)
+    emails: list[ContactEmail] = Field(default_factory=list)
+    postalAddresses: list[ContactPostalAddress] = Field(default_factory=list)
+    urlAddresses: list[ContactUrl] = Field(default_factory=list)
+    socialProfiles: list[ContactSocialProfile] = Field(default_factory=list)
+    instantMessageAddresses: list[ContactInstantMessageAddress] = Field(default_factory=list)
+    dates: list[ContactDate] = Field(default_factory=list)
+    relations: list[ContactRelation] = Field(default_factory=list)
     notes: str | None = None
 
     @field_validator("displayName")

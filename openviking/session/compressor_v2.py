@@ -669,9 +669,6 @@ class SessionCompressorV2:
                 )
                 result.errors.extend(retry_index_result.errors)
 
-            from openviking.session.memory.people_profile_proposals import collect_profile_proposals
-            await collect_profile_proposals(viking_fs, ctx, result, context_provider, archive_uri)
-
             # Write memory_diff.json to archive directory
             if archive_uri and viking_fs:
                 if operations is None:

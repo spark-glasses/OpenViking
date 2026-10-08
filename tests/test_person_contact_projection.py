@@ -63,8 +63,13 @@ def env():
             "displayName": "Sungryull Sohn",
             "givenName": "Sungryull",
             "familyName": "Sohn",
-            "emails": ["sohn@example.test"],
+            "artifactId": "ct_0000000000",
             "organization": "Acme",
+            "jobTitle": "Engineer",
+            "birthday": {"month": 3, "day": 5},
+            "phones": [{"number": "+1 555 0100", "label": "mobile"}],
+            "emails": [{"address": "sohn@example.test", "label": "work"}],
+            "postalAddresses": [{"city": "Seoul", "country": "South Korea", "label": "work"}],
         },
     }
     return SimpleNamespace(
@@ -86,10 +91,56 @@ async def test_first_sync_provisions_canonical_person_without_model(env):
     assert doc.memory_type == "people"
     assert doc.extra_fields["anchorId"] == ANCHOR
     identity = await load_person_identity(env.fs, env.ctx, ANCHOR)
-    assert identity["profile"]["emails"] == ["sohn@example.test"]
+    assert identity["profile"]["emails"] == [{"address": "sohn@example.test", "label": "work"}]
     assert identity["projectionState"] == "complete"
     assert (await load_active_people(env.fs, env.ctx))[0]["anchorId"] == ANCHOR
     assert (await env.store.sync(env.body))["status"] == "unchanged"
+
+
+@pytest.mark.asyncio
+async def test_page_shows_what_the_contact_holds_and_no_empty_list_but_phones_and_emails(env):
+    await env.store.sync(env.body)
+    doc = MemoryFileUtils.read(env.fs.files[env.uri], uri=env.uri)
+    shown = json.loads(doc.content.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert shown == {
+        "personId": CONTACT,
+        "anchorId": ANCHOR,
+        "artifactId": "ct_0000000000",
+        "revision": 1,
+        "deleted": False,
+        "displayName": "Sungryull Sohn",
+        "givenName": "Sungryull",
+        "familyName": "Sohn",
+        "organization": "Acme",
+        "jobTitle": "Engineer",
+        "birthday": {"month": 3, "day": 5},
+        "phones": [{"number": "+1 555 0100", "label": "mobile"}],
+        "emails": [{"address": "sohn@example.test", "label": "work"}],
+        "postalAddresses": [{"city": "Seoul", "country": "South Korea", "label": "work"}],
+    }
+    bare = {**env.body, "revision": 2, "profile": {"displayName": "Sungryull Sohn"}}
+    await env.store.sync(bare)
+    doc = MemoryFileUtils.read(env.fs.files[env.uri], uri=env.uri)
+    shown = json.loads(doc.content.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert shown == {
+        "personId": CONTACT,
+        "anchorId": ANCHOR,
+        "revision": 2,
+        "deleted": False,
+        "displayName": "Sungryull Sohn",
+        "phones": [],
+        "emails": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_directory_lists_what_a_person_is_found_by(env):
+    await env.store.sync(env.body)
+    entry = (await load_active_people(env.fs, env.ctx))[0]
+    assert entry["artifactId"] == "ct_0000000000"
+    assert entry["emails"] == ["sohn@example.test"]
+    assert entry["phones"] == ["+1 555 0100"]
+    assert "Sohn Sungryull" in entry["aliases"]
 
 
 @pytest.mark.asyncio
@@ -107,7 +158,7 @@ async def test_contact_updates_preserve_accumulated_memory_and_other_metadata(en
     updated = {
         **env.body,
         "revision": 2,
-        "profile": {**env.body["profile"], "organization": "Nova"},
+        "profile": {**env.body["profile"], "notes": "Met in Seoul."},
     }
     await env.store.sync(updated)
     doc = MemoryFileUtils.read(env.fs.files[env.uri], uri=env.uri)
@@ -117,8 +168,8 @@ async def test_contact_updates_preserve_accumulated_memory_and_other_metadata(en
     assert doc.content.count(CONTACT_SECTION_START) == 1
     assert (await env.store.sync(env.body))["status"] == "stale"
     assert (await load_person_identity(env.fs, env.ctx, ANCHOR))["profile"][
-        "organization"
-    ] == "Nova"
+        "notes"
+    ] == "Met in Seoul."
 
 
 @pytest.mark.asyncio
@@ -323,9 +374,8 @@ async def test_projection_lock_uses_same_native_person_path(env, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("missing", ["start", "end"])
-@pytest.mark.parametrize("legacy", [False, True])
 async def test_missing_marker_is_repaired_before_native_apply_without_losing_narrative(
-    env, missing, legacy
+    env, missing
 ):
     from openviking.session.memory.dataclass import ResolvedOperations
     from openviking.session.memory.person_identity import CONTACT_SECTION_END
@@ -335,11 +385,6 @@ async def test_missing_marker_is_repaired_before_native_apply_without_losing_nar
 
     await env.store.sync(env.body)
     old = MemoryFileUtils.read(env.fs.files[env.uri], uri=env.uri)
-    if legacy:
-        # Existing projections predate the new full-profile source link.
-        old.content = "\n".join(
-            line for line in old.content.splitlines() if '"fullProfileUri"' not in line
-        )
     old.content += "\n\nEarlier invitation was not accepted."
     marker = CONTACT_SECTION_START if missing == "start" else CONTACT_SECTION_END
     proposed = old.content.replace(marker, "") + "\n\nHe now studies pottery on Saturdays."
@@ -363,7 +408,7 @@ async def test_missing_marker_is_repaired_before_native_apply_without_losing_nar
     assert "He now studies pottery on Saturdays." in stored.content
     assert stored.content.count(CONTACT_SECTION_START) == 1
     assert stored.content.count(CONTACT_SECTION_END) == 1
-    assert identity_uri(env.ctx, ANCHOR) in stored.content
+    assert "sohn@example.test" in stored.content
 
 
 @pytest.mark.asyncio
@@ -387,7 +432,7 @@ async def test_unknown_partial_contact_section_is_rejected_before_any_write(env)
                     {
                         "search": old.content,
                         "replace": old.content.replace(CONTACT_SECTION_END, "").replace(
-                            "Acme", "Invented"
+                            "sohn@example.test", "invented@example.test"
                         ),
                     }
                 ]
@@ -413,8 +458,9 @@ async def test_large_valid_contact_keeps_full_source_with_explicit_bounded_proje
         "familyName": "F" * 255,
         "aliases": ["Alias" * 200],
         "notes": "A long imported note. " * 4000,
-        "emails": [f"address-{i}@example.test" for i in range(130)] + ["x" * 2000],
-        "phones": [str(i) for i in range(110)],
+        "emails": [{"address": f"address-{i}@example.test"} for i in range(130)]
+        + [{"address": "x" * 2000, "label": "work"}],
+        "phones": [{"number": str(i)} for i in range(110)],
     }
     await env.store.sync({**env.body, "profile": profile})
     raw = await load_person_identity(env.fs, env.ctx, ANCHOR)

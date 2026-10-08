@@ -140,6 +140,7 @@ async def load_active_people(viking_fs, ctx):
 
 
 def compact_identity(record):
+    profile = record["profile"]
     result = {
         key: record[key]
         for key in (
@@ -152,32 +153,70 @@ def compact_identity(record):
             "deleted",
         )
     }
-    result["confirmationStatus"] = record["profile"].get("confirmationStatus", "confirmed")
+    result["confirmationStatus"] = profile.get("confirmationStatus", "confirmed")
+    result["artifactId"] = profile.get("artifactId")
+    result["emails"] = [email["address"] for email in profile["emails"]]
+    result["phones"] = [phone["number"] for phone in profile["phones"]]
     return result
+
+
+# The basic information the page shows, in the order it is shown.
+_SHOWN_PROFILE_FIELDS = (
+    "displayName",
+    "givenName",
+    "middleName",
+    "familyName",
+    "namePrefix",
+    "nameSuffix",
+    "nickname",
+    "organization",
+    "departmentName",
+    "jobTitle",
+    "contactType",
+    "birthday",
+    "phones",
+    "emails",
+    "postalAddresses",
+    "urlAddresses",
+    "socialProfiles",
+    "instantMessageAddresses",
+    "dates",
+    "relations",
+    "notes",
+)
+# Lists every page shows, empty or not; the others appear once they hold something.
+_ALWAYS_SHOWN_LISTS = {"phones": "number", "emails": "address"}
+_MAX_SHOWN_ITEMS = 32
 
 
 def model_contact_profile(identity):
     """Bound the readable projection; full imported values remain in the sidecar."""
-    profile = dict(identity["profile"])
+    source = identity["profile"]
+    profile = {
+        key: source[key]
+        for key in _SHOWN_PROFILE_FIELDS
+        if key in source and (source[key] != [] or key in _ALWAYS_SHOWN_LISTS)
+    }
     truncated = {}
     if len(profile.get("notes") or "") > 4000:
         truncated["notes"] = {"totalChars": len(profile["notes"]), "shownChars": 4000}
         profile["notes"] = profile["notes"][:4000]
-    for key in ("emails", "phones"):
-        original = profile.get(key, [])
-        shown = [value[:1000] for value in original[:32]]
+    for key, original in list(profile.items()):
+        if not isinstance(original, list):
+            continue
+        value_field = _ALWAYS_SHOWN_LISTS.get(key)
+        shown = [
+            {**item, value_field: item[value_field][:1000]} if value_field else item
+            for item in original[:_MAX_SHOWN_ITEMS]
+        ]
         if shown != original:
-            truncated[key] = {
-                "totalItems": len(original),
-                "shownItems": len(shown),
-                "maxShownItemChars": 1000,
-            }
+            truncated[key] = {"totalItems": len(original), "shownItems": len(shown)}
+            if value_field:
+                truncated[key]["maxShownItemChars"] = 1000
         profile[key] = shown
     if truncated:
         profile["projectionTruncated"] = truncated
-    profile["fullProfileUri"] = (
-        identity["memoryUri"].rsplit("/", 1)[0] + "/profile.json"
-    )
+        profile["fullProfileUri"] = identity["memoryUri"].rsplit("/", 1)[0] + "/profile.json"
     return profile
 
 
@@ -192,9 +231,11 @@ def is_person_identity_uri(uri, ctx):
 
 
 def render_contact_section(identity):
+    artifact_id = identity["profile"].get("artifactId")
     data = {
         "personId": identity["personId"],
         "anchorId": identity["anchorId"],
+        **({"artifactId": artifact_id} if artifact_id else {}),
         "revision": identity["revision"],
         "deleted": identity["deleted"],
         **model_contact_profile(identity),
