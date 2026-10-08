@@ -89,14 +89,21 @@ class ProfileStore:
         return page
 
     @staticmethod
+    def identity_text(data):
+        """The identity as the page shows it, under the revision it was sent with."""
+        return json.dumps(
+            {"revision": data["identityRevision"], **data["identity"]},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @staticmethod
     def render(data):
         sections = [
             f"## {b['title']}\n{b['content']}" for b in data["blocks"] if not b.get("deleted")
         ]
         if data["identity"] is not None:
-            sections.insert(
-                0, "## Identity\n" + json.dumps(data["identity"], ensure_ascii=False, indent=2)
-            )
+            sections.insert(0, "## Identity\n" + ProfileStore.identity_text(data))
         return "\n\n".join(sections).strip()
 
     @staticmethod
@@ -135,34 +142,30 @@ class ProfileStore:
             raise AlreadyExistsError("Profile operation ID was reused with different input")
         return old is not None, digest
 
-    async def identity(self, operation_id, expected_revision, identity, initialize=False):
+    async def sync_identity(self, revision, identity):
+        """Take the identity the application holds at `revision`.
+
+        The application's database is the authority: a later revision replaces
+        what is here, an earlier one is answered with what is kept.
+        """
         async with owner_lock(self.ctx):
             page = await self._get()
             d = page.extra_fields["profileDocument"]
-            replay, digest = self._replay(
-                d, operation_id, [expected_revision, identity, initialize]
-            )
-            if replay:
-                return self.view(page)
-            if initialize and d["identity"] is not None:
-                return self.view(page)
-            if not initialize and d["identityRevision"] != expected_revision:
-                raise AlreadyExistsError("Profile identity changed")
+            held = d["identityRevision"]
+            if revision < held:
+                return {"status": "stale", "identityRevision": held}
+            if revision == held and d["identity"] is not None:
+                if d["identity"] != identity:
+                    raise AlreadyExistsError(
+                        "Identity revision already belongs to a different snapshot"
+                    )
+                return {"status": "unchanged", "identityRevision": held}
             before = copy.deepcopy(d["identity"])
             d["identity"] = copy.deepcopy(identity)
-            d["identityRevision"] = expected_revision if initialize else expected_revision + 1
-            self._record(
-                d,
-                operation_id,
-                "identity",
-                before,
-                identity,
-                "import" if initialize else "user",
-                None,
-            )
-            d["operations"][operation_id] = digest
+            d["identityRevision"] = revision
+            self._record(d, str(uuid4()), "identity", before, identity, "application", None)
             await self._save(page)
-            return self.view(page)
+            return {"status": "synced", "identityRevision": revision}
 
     @staticmethod
     def _record(d, edit_id, block_id, before, after, actor, reason):
@@ -273,59 +276,78 @@ class ProfileStore:
             )
             incoming = dict(split_blocks(new))
             if d["identity"] is not None:
-                if incoming.pop("Identity", None) != json.dumps(
-                    d["identity"], ensure_ascii=False, indent=2
-                ):
+                if incoming.pop("Identity", None) != self.identity_text(d):
                     raise InvalidArgumentError(
-                        "Profile identity must be edited through the explicit identity API"
+                        "Profile identity is set by the application, not by a model"
                     )
             elif "Identity" in incoming:
                 raise InvalidArgumentError("A model cannot create verified Profile identity")
-            from openviking.session.memory.utils.link_renderer import LinkRenderer
-
-            for b in d["blocks"]:
-                if b["authority"] == "user":
-                    if b.get("deleted") and b["title"] in incoming:
-                        raise InvalidArgumentError(
-                            "A user-deleted Profile section cannot be restored"
-                        )
-                    if not b.get("deleted") and incoming.get(
-                        b["title"]
-                    ) != LinkRenderer.strip_links(b["content"]):
-                        raise InvalidArgumentError("User-edited Profile sections are protected")
-            changed = []
-            for b in d["blocks"]:
-                if b["authority"] == "user":
-                    incoming.pop(b["title"], None)
-                    continue
-                before = copy.deepcopy(b)
-                content = incoming.pop(b["title"], None)
-                b.update(
-                    content=content if content is not None else b["content"],
-                    deleted=content is None,
-                    authority="learned",
-                )
-                if before != b:
-                    changed.append((before, copy.deepcopy(b)))
-            for title, content in incoming.items():
-                b = {
-                    "id": str(uuid4()),
-                    "title": title,
-                    "content": content,
-                    "authority": "learned",
-                    "deleted": False,
-                }
-                d["blocks"].append(b)
-                changed.append((None, b))
-            for before, after in changed:
-                self._record(d, str(uuid4()), after["id"], before, after, "model", None)
+            changed = self._apply_sections(d, incoming, "model")
             links_changed = self._merge_links(
                 page,
                 getattr(operation, "_incoming_links_by_uri", {}).get(self.uri, []),
                 getattr(operation, "_incoming_backlinks_by_uri", {}).get(self.uri, []),
             )
             if changed or links_changed:
-                await self._save(page, bump=bool(changed))
+                await self._save(page, bump=changed)
+
+    async def write_body(self, expected_revision, content):
+        """Replace the sections below the identity with an agent's version.
+
+        The sections stay open to later learning. A section the user edited
+        by hand is theirs: it must come back as it is.
+        """
+        async with owner_lock(self.ctx):
+            page = await self._get()
+            d = page.extra_fields["profileDocument"]
+            if d["documentRevision"] != expected_revision:
+                raise AlreadyExistsError("Profile changed; read the current version before saving")
+            incoming = dict(split_blocks(content))
+            if "Identity" in incoming:
+                raise InvalidArgumentError("Profile identity is set by the application")
+            if self._apply_sections(d, incoming, "agent"):
+                await self._save(page)
+            return self.view(page)
+
+    def _apply_sections(self, d, incoming, actor):
+        """Make the learned sections match `incoming`; True when any changed."""
+        from openviking.session.memory.utils.link_renderer import LinkRenderer
+
+        for b in d["blocks"]:
+            if b["authority"] == "user":
+                if b.get("deleted") and b["title"] in incoming:
+                    raise InvalidArgumentError("A user-deleted Profile section cannot be restored")
+                if not b.get("deleted") and incoming.get(b["title"]) != LinkRenderer.strip_links(
+                    b["content"]
+                ):
+                    raise InvalidArgumentError("User-edited Profile sections are protected")
+        changed = []
+        for b in d["blocks"]:
+            if b["authority"] == "user":
+                incoming.pop(b["title"], None)
+                continue
+            before = copy.deepcopy(b)
+            content = incoming.pop(b["title"], None)
+            b.update(
+                content=content if content is not None else b["content"],
+                deleted=content is None,
+                authority="learned",
+            )
+            if before != b:
+                changed.append((before, copy.deepcopy(b)))
+        for title, content in incoming.items():
+            b = {
+                "id": str(uuid4()),
+                "title": title,
+                "content": content,
+                "authority": "learned",
+                "deleted": False,
+            }
+            d["blocks"].append(b)
+            changed.append((None, b))
+        for before, after in changed:
+            self._record(d, str(uuid4()), after["id"], before, after, actor, None)
+        return bool(changed)
 
     @staticmethod
     def _merge_links(page, links, backlinks):

@@ -1,10 +1,11 @@
-"""Profile writes are deterministic; only native extraction may write learned text."""
+"""Profile writes are deterministic: the application sends the identity and an
+agent's sections; native extraction writes what it learns."""
 
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from openviking.server.auth import get_request_context
 from openviking.server.dependencies import get_service
@@ -15,19 +16,49 @@ from openviking.session.memory.profile_store import ProfileStore
 router = APIRouter(prefix="/api/v1/profile", tags=["profile"])
 
 
+_SHORT = Annotated[str, StringConstraints(min_length=1, max_length=500)]
+
+
+class ConnectedAccount(BaseModel):
+    """Who the user is in one connected app, as far as that app says."""
+
+    model_config = ConfigDict(extra="forbid")
+    email: _SHORT | None = None
+    name: _SHORT | None = None
+    handle: _SHORT | None = None
+    userId: _SHORT | None = None
+    title: _SHORT | None = None
+    workspace: _SHORT | None = None
+    workspaceUrl: _SHORT | None = None
+    teams: list[_SHORT] | None = Field(default=None, max_length=100)
+    company: _SHORT | None = None
+    tradeNames: list[_SHORT] | None = Field(default=None, max_length=20)
+
+
 class Identity(BaseModel):
+    """Who the user is: the application's database holds it, this is its copy.
+
+    An account is an address when only the address is known, a short note when
+    the app says nothing about the user, and otherwise what the app says.
+    """
+
     model_config = ConfigDict(extra="forbid")
-    preferredName: str = Field(max_length=255)
-    names: list[str] = Field(max_length=50)
-    additionalEmails: list[str] = Field(max_length=50)
+    names: list[Annotated[str, StringConstraints(min_length=1, max_length=255)]] = Field(
+        max_length=50
+    )
+    connectedAccounts: dict[_SHORT, list[_SHORT | ConnectedAccount]]
 
 
-class IdentityEdit(BaseModel):
+class IdentitySync(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    operationId: UUID
-    expectedRevision: int = Field(ge=0)
+    revision: int = Field(ge=1, le=9007199254740991, strict=True)
     identity: Identity
-    initialize: bool = False
+
+
+class BodyWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expectedRevision: int = Field(ge=0)
+    content: str = Field(max_length=200000)
 
 
 class BlockEdit(BaseModel):
@@ -53,15 +84,20 @@ async def get(ctx: RequestContext = Depends(get_request_context)):
 
 
 @router.post("/identity")
-async def identity(body: IdentityEdit, ctx: RequestContext = Depends(get_request_context)):
+async def identity(body: IdentitySync, ctx: RequestContext = Depends(get_request_context)):
     return Response(
         status="ok",
-        result=await (await store(ctx)).identity(
-            str(body.operationId),
-            body.expectedRevision,
-            body.identity.model_dump(),
-            body.initialize,
+        result=await (await store(ctx)).sync_identity(
+            body.revision, body.identity.model_dump(exclude_none=True)
         ),
+    )
+
+
+@router.post("/body")
+async def body(edit: BodyWrite, ctx: RequestContext = Depends(get_request_context)):
+    return Response(
+        status="ok",
+        result=await (await store(ctx)).write_body(edit.expectedRevision, edit.content),
     )
 
 

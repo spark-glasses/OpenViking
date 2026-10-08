@@ -36,11 +36,11 @@ async def test_migrate_narrative_and_edit_preserves_original_and_identity(store)
     p = await store.get()
     b = p["blocks"][0]
     identity = {
-        "preferredName": "Ben",
         "names": ["Ben", "Junkuan"],
-        "additionalEmails": ["a@example.test"],
+        "connectedAccounts": {"Gmail": ["a@example.test"]},
     }
-    p = await store.identity(str(uuid4()), 7, identity, True)
+    await store.sync_identity(7, identity)
+    p = await store.get()
     before_revision = p["identityRevision"]
     op = str(uuid4())
     p = await store.edit(
@@ -95,17 +95,83 @@ async def test_deleted_user_section_cannot_be_restored_and_unlock_is_explicit(st
     assert "Piano" in (await store.get())["content"]
 
 
+IDENTITY = {
+    "names": ["Ben", "Junkuan"],
+    "connectedAccounts": {
+        "Spark sign-in": ["ben@example.test"],
+        "Slack": [{"workspace": "Acme", "name": "Ben L", "userId": "U123"}],
+        "Granola": ["connected"],
+    },
+}
+
+
 @pytest.mark.asyncio
-async def test_identity_is_protected_and_retry_has_one_revision(store):
-    identity = {"preferredName": "Ben", "names": ["Ben"], "additionalEmails": []}
-    p = await store.identity(str(uuid4()), 0, identity, True)
-    op = str(uuid4())
-    identity = {**identity, "preferredName": "Benjamin"}
-    p = await store.identity(op, 0, identity)
-    assert (await store.identity(op, 0, identity)) == p
-    assert p["identityRevision"] == 1
+async def test_identity_is_what_the_application_last_sent(store):
+    assert await store.sync_identity(1, IDENTITY) == {"status": "synced", "identityRevision": 1}
+    assert await store.sync_identity(1, IDENTITY) == {"status": "unchanged", "identityRevision": 1}
+    renamed = {**IDENTITY, "names": ["Benjamin", "Junkuan"]}
+    with pytest.raises(AlreadyExistsError):
+        await store.sync_identity(1, renamed)
+    assert await store.sync_identity(4, renamed) == {"status": "synced", "identityRevision": 4}
+    assert await store.sync_identity(2, IDENTITY) == {"status": "stale", "identityRevision": 4}
+    p = await store.get()
+    assert p["identity"] == renamed and p["identityRevision"] == 4
+    assert p["content"].startswith('## Identity\n{\n  "revision": 4,\n  "names": [')
+    assert [h["actor"] for h in await store.history("identity")] == ["application", "application"]
+    assert all(h["reviewStatus"] == "notRequired" for h in await store.history("identity"))
+
+
+@pytest.mark.asyncio
+async def test_extraction_cannot_change_the_identity(store):
+    await store.sync_identity(1, IDENTITY)
+    p = await store.get()
+    await native(store, p["content"] + "\n\n## Hobbies\nPiano")
+    for changed in (
+        p["content"].replace("Junkuan", "Someone"),
+        p["content"].replace("U123", "U999"),
+        "## Hobbies\nPiano",
+    ):
+        with pytest.raises(InvalidArgumentError):
+            await native(store, changed)
+    assert (await store.get())["identity"] == IDENTITY
+
+
+@pytest.mark.asyncio
+async def test_an_agent_rewrites_sections_and_leaves_them_open_to_learning(store):
+    await store.sync_identity(1, IDENTITY)
+    p = await store.get()
+    p = await store.write_body(p["documentRevision"], "## Work\nBuilds glasses.\n\n## Hobbies\nPiano")
+    assert [(b["title"], b["authority"]) for b in p["blocks"]] == [
+        ("Work", "learned"),
+        ("Hobbies", "learned"),
+    ]
+    assert p["identity"] == IDENTITY and p["content"].startswith("## Identity\n")
+    assert {h["actor"] for h in await store.history() if h["blockId"] != "identity"} == {"agent"}
+
+    with pytest.raises(AlreadyExistsError):
+        await store.write_body(p["documentRevision"] - 1, "## Work\nSomething else")
     with pytest.raises(InvalidArgumentError):
-        await native(store, p["content"].replace("Benjamin", "Someone"))
+        await store.write_body(p["documentRevision"], "## Identity\n{}\n\n## Work\nBuilds glasses.")
+
+    p = await store.write_body(p["documentRevision"], "## Work\nBuilds smart glasses.")
+    assert [(b["title"], b["deleted"]) for b in p["blocks"]] == [("Work", False), ("Hobbies", True)]
+    await native(store, p["content"].replace("smart glasses", "smart glasses at Spark"))
+    assert "at Spark" in (await store.get())["content"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_cannot_change_a_section_the_user_edited(store):
+    p = await store.get()
+    p = await store.edit(str(uuid4()), p["documentRevision"], None, "Goals", "Build Spark")
+    with pytest.raises(InvalidArgumentError):
+        await store.write_body(p["documentRevision"], "## Goals\nSomething else")
+    with pytest.raises(InvalidArgumentError):
+        await store.write_body(p["documentRevision"], "## Hobbies\nPiano")
+    p = await store.write_body(p["documentRevision"], "## Goals\nBuild Spark\n\n## Hobbies\nPiano")
+    assert [(b["title"], b["authority"]) for b in p["blocks"]] == [
+        ("Goals", "user"),
+        ("Hobbies", "learned"),
+    ]
 
 
 @pytest.mark.asyncio
