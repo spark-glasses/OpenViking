@@ -95,7 +95,7 @@ def _extract_points(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _hash_sparse_term(term: str) -> int:
     # Keep sparse indices in the positive signed 32-bit integer range expected
     # by Qdrant sparse vectors.
-    return xxhash.xxh64_intdigest(str(term)) % QDRANT_SPARSE_INDEX_MAX
+    return xxhash.xxh64_intdigest(str(term).encode("utf-8")) % QDRANT_SPARSE_INDEX_MAX
 
 
 def _sparse_to_qdrant(sparse_vector: Optional[Dict[str, float]]) -> Optional[Dict[str, List[Any]]]:
