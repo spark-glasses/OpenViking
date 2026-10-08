@@ -203,6 +203,30 @@ class PersonContactStore:
             raise RuntimeError("Contact projection embedding enqueue failed")
         return "queued"
 
+    async def retire(self, anchor, into_anchor):
+        """Record that one person now stands for another, who leaves the directory.
+
+        The record stays for good: it is what keeps the merged-away person from
+        being delivered or written again.
+        """
+        async with self._lock(anchor):
+            directory = await load_identity_directory(self.fs, self.ctx)
+            survivor = directory["people"].get(into_anchor)
+            if not survivor or survivor.get("deleted"):
+                raise InvalidArgumentError("The person merged into is not a current person")
+            retired = directory.setdefault("retired", {})
+            if retired.get(anchor, into_anchor) != into_anchor:
+                raise ConflictError("This person was already merged into someone else")
+            if retired.get(anchor) == into_anchor and anchor not in directory["people"]:
+                return
+            retired[anchor] = into_anchor
+            directory["people"].pop(anchor, None)
+            await self.fs.write_file(
+                identity_directory_uri(self.ctx),
+                json.dumps(directory, ensure_ascii=False, indent=2),
+                ctx=self.ctx,
+            )
+
     async def sync(self, value):
         request = SyncPersonRequest.model_validate(value)
         payload = request.model_dump(mode="json")
@@ -213,6 +237,8 @@ class PersonContactStore:
         async with self._lock(anchor):
             directory = await load_identity_directory(self.fs, self.ctx)
             previous = await load_person_identity(self.fs, self.ctx, anchor)
+            if anchor in directory.get("retired", {}):
+                raise ConflictError("This person was merged into another and is no longer kept")
             bound = directory["contacts"].get(contact_id)
             if bound and bound != anchor:
                 raise ConflictError(

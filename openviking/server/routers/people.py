@@ -59,6 +59,30 @@ async def person_operation(
     return Response(status="ok", result=result)
 
 
+class RetirePersonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    anchorId: UUID
+    intoAnchorId: UUID
+
+
+@router.post("/retire")
+async def retire(body: RetirePersonRequest, ctx: RequestContext = Depends(get_request_context)):
+    from openviking.session.memory.person_retire import retire_person
+
+    service = get_service()
+    await service.initialize_user_directories(ctx)
+    return Response(
+        status="ok",
+        result=await retire_person(
+            service.viking_fs,
+            ctx,
+            service.vikingdb_manager,
+            str(body.anchorId),
+            str(body.intoAnchorId),
+        ),
+    )
+
+
 @router.get("/directory")
 async def person_directory(ctx: RequestContext = Depends(get_request_context)):
     from openviking.session.memory.person_identity import load_identity_directory

@@ -117,10 +117,17 @@ async def load_identity_directory(viking_fs, ctx):
     if (
         not isinstance(directory.get("people"), dict)
         or not isinstance(directory.get("contacts"), dict)
+        or not isinstance(directory.get("retired", {}), dict)
         or len(directory["people"]) > MAX_PEOPLE
     ):
         raise InvalidArgumentError("Invalid or oversized contact identity directory")
     return directory
+
+
+async def retired_into(viking_fs, ctx, anchor_id):
+    """The person who stands for a merged-away one, or None for anyone else."""
+    directory = await load_identity_directory(viking_fs, ctx)
+    return directory.get("retired", {}).get(str(UUID(str(anchor_id))))
 
 
 async def load_active_people(viking_fs, ctx):
@@ -325,6 +332,12 @@ async def preserve_person_identity(viking_fs, ctx, uri, memory):
         UUID(anchor)
     except ValueError:
         return memory  # Unregistered upstream OV people remain supported.
+    survivor = await retired_into(viking_fs, ctx, anchor)
+    if survivor:
+        raise InvalidArgumentError(
+            "This person was merged into another; write to "
+            + person_memory_uri(ctx, survivor)
+        )
     identity = await load_person_identity(viking_fs, ctx, anchor)
     if identity is None:
         if "contact_projection_revision" in memory.extra_fields:
