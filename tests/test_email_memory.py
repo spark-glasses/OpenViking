@@ -76,15 +76,14 @@ def setup(monkeypatch):
     for module in ("openviking.session.compressor_v2", "openviking.session.memory.memory_updater"):
         monkeypatch.setattr(module + ".get_viking_fs", lambda: fs)
     ctx = RequestContext(user=UserIdentifier("account", "alice"), role=Role.ROOT)
-    spec = {
-        "batchId": "batch-1",
+    person = {
         "personId": "current-contact",
         "anchorId": "stable-person",
-        "personName": "Ethan",
+        "name": "Ethan",
         "emails": ["ethan@example.test"],
         "personMemoryUri": PERSON,
-        "sourceRefs": [INITIAL_REF],
     }
+    spec = {"batchId": "batch-1", "people": [person], "sourceRefs": [INITIAL_REF]}
     messages = [
         Message(
             id="input-1",
@@ -108,7 +107,13 @@ def setup(monkeypatch):
         )
 
     return SimpleNamespace(
-        config=config, fs=fs, ctx=ctx, spec=spec, provider=provider, messages=messages
+        config=config,
+        fs=fs,
+        ctx=ctx,
+        spec=spec,
+        person=person,
+        provider=provider,
+        messages=messages,
     )
 
 
@@ -143,17 +148,30 @@ def test_email_config_round_trip_and_hard_limits(setup):
     with pytest.raises(ValueError):
         setup.provider(maxSourceChars=200001)
     with pytest.raises(ValueError):
-        setup.provider(personMemoryUri="viking://user/bob/memories/people/stable-person/memory.md")
+        setup.provider(
+            people=[
+                {
+                    **setup.person,
+                    "personMemoryUri": "viking://user/bob/memories/people/stable-person/memory.md",
+                }
+            ]
+        )
     with pytest.raises(ValueError):
-        setup.provider(anchorId="../another")
+        setup.provider(people=[{**setup.person, "anchorId": "../another"}])
+    with pytest.raises(ValueError):
+        setup.provider(people=[setup.person, setup.person])
 
 
-def test_email_scope_and_anchor_stay_stable_with_shared_people_schema(setup):
-    assert "people" in MemoryTypeRegistry().list_names()
-    provider = setup.provider(personId="replacement-contact")
-    assert provider._get_registry().get("people").filename_template == "stable-person/memory.md"
+def test_email_reaches_the_whole_memory_with_the_shared_people_schema(setup):
+    provider = setup.provider()
+    assert (
+        provider._get_registry().get("people").filename_template
+        == MemoryTypeRegistry().get("people").filename_template
+    )
     assert set(provider.get_tools()) == {"read", "search", "searchEmails", "readEmail"}
     assert {s.memory_type for s in provider.get_memory_schemas(setup.ctx)} == {
+        "profile",
+        "preferences",
         "people",
         "entities",
         "events",
@@ -210,6 +228,89 @@ async def test_existing_matter_requires_read_then_can_update(setup):
         provider.validate_operations(operations(operation(uri=uri, kind="entities")))
     await provider.execute_tool(ToolCall("r", "read", {"uri": uri}))
     provider.validate_operations(operations(operation(uri=uri, kind="entities")))
+
+
+@pytest.mark.asyncio
+async def test_mail_from_no_known_person_still_updates_related_matters(setup):
+    matter = "viking://user/alice/memories/entities/project/atlas.md"
+    provider = setup.provider(people=[])
+    await provider.prefetch()
+    assert PERSON not in provider._missing_uris
+    await provider.execute_tool(ToolCall("r", "read", {"uri": matter}))
+    provider.validate_operations(operations(operation(uri=matter, kind="entities")))
+    with pytest.raises(ValueError):
+        provider.validate_operations(operations(operation()))
+
+
+@pytest.mark.asyncio
+async def test_every_supplied_person_is_a_write_target_and_no_one_else(setup):
+    second = PERSON.replace("stable-person", "second-person")
+    provider = setup.provider(
+        people=[
+            setup.person,
+            {
+                "personId": "second-contact",
+                "anchorId": "second-person",
+                "name": "Mina",
+                "emails": ["mina@example.test"],
+                "personMemoryUri": second,
+            },
+        ]
+    )
+    await provider.prefetch()
+    provider.validate_operations(operations(operation(), operation(uri=second)))
+    with pytest.raises(ValueError):
+        provider.validate_operations(
+            operations(operation(uri=PERSON.replace("stable-person", "third-person")))
+        )
+
+
+@pytest.mark.asyncio
+async def test_profile_and_preferences_follow_the_read_before_write_rule(setup):
+    root = "viking://user/alice/memories/"
+    preference = root + "preferences/alice/meetings.md"
+    setup.fs.files[preference] = "# Meetings\n- Prefers mornings."
+    provider = setup.provider()
+    await provider.prefetch()
+    provider.validate_operations(operations(operation(uri=root + "profile.md", kind="profile")))
+    with pytest.raises(ValueError):
+        provider.validate_operations(
+            operations(operation(uri=root + "preferences/profile.md", kind="profile"))
+        )
+    with pytest.raises(ValueError):
+        provider.validate_operations(operations(operation(uri=preference, kind="preferences")))
+    await provider.execute_tool(ToolCall("r", "read", {"uri": preference}))
+    provider.validate_operations(operations(operation(uri=preference, kind="preferences")))
+
+
+@pytest.mark.asyncio
+async def test_a_card_for_an_unknown_person_is_refused(setup):
+    card = "viking://user/alice/memories/entities/person/dana.md"
+    provider = setup.provider()
+    await provider.execute_tool(ToolCall("r", "read", {"uri": card}))
+    stranger = operation(uri=card, kind="entities")
+    stranger.memory_fields.update({"category": "person", "name": "dana"})
+    with pytest.raises(ValueError, match="person cards"):
+        provider.validate_operations(operations(stranger))
+
+
+@pytest.mark.asyncio
+async def test_an_unfiltered_email_search_is_not_narrowed_to_one_person(setup, monkeypatch):
+    setup.config.memory.email_source_base_url = "http://bridge.test"
+    setup.config.memory.email_source_api_key = "test-only-secret"
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"success": True, "results": []})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        "openviking.session.memory.email_context_provider.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    await setup.provider()._email_request("searchEmails", {})
+    assert json.loads(requests[0].content) == {"maxResults": 10}
 
 
 @pytest.mark.asyncio
@@ -349,7 +450,7 @@ async def test_session_creation_persists_context_and_forces_safe_policy(setup, m
     await service.create(
         setup.ctx, "s", memory_policy={"self": {"enabled": False}}, email_context=setup.spec
     )
-    assert session.meta.email_context["anchorId"] == "stable-person"
+    assert session.meta.email_context["people"][0]["anchorId"] == "stable-person"
     assert session.meta.memory_policy == email_memory_policy()
     session.ensure_exists.assert_awaited_once()
 
@@ -369,6 +470,7 @@ async def test_native_loop_reads_history_and_applies_memory(setup, monkeypatch):
             "people": [
                 {
                     "page_id": 100,
+                    "anchorId": "stable-person",
                     "content": {
                         "blocks": [
                             {
@@ -486,7 +588,10 @@ async def test_retry_creates_no_new_archive_and_keeps_frozen_anchor(setup, monke
     setup.fs.files[ARCHIVE + "/.failed.json"] = "{}"
     setup.fs.files[ARCHIVE + "/messages.jsonl"] = setup.messages[0].to_jsonl()
     session = Session(viking_fs=setup.fs, ctx=setup.ctx, session_id="email-batch")
-    session.meta.email_context = {**setup.spec, "personId": "changed-live-contact"}
+    session.meta.email_context = {
+        **setup.spec,
+        "people": [{**setup.person, "personId": "changed-live-contact"}],
+    }
     session._run_memory_extraction = AsyncMock()
     tracker = SimpleNamespace(
         create_if_no_running=AsyncMock(return_value=SimpleNamespace(task_id="retry-1"))
@@ -497,7 +602,7 @@ async def test_retry_creates_no_new_archive_and_keeps_frozen_anchor(setup, monke
     assert result["archive_uri"] == ARCHIVE
     assert result["task_id"] == "retry-1"
     assert (
-        session._run_memory_extraction.call_args.kwargs["email_context"]["personId"]
+        session._run_memory_extraction.call_args.kwargs["email_context"]["people"][0]["personId"]
         == "current-contact"
     )
 
@@ -598,7 +703,7 @@ async def test_native_question_result_matches_saved_document(setup, monkeypatch)
 async def test_changed_binding_prevents_all_writes(setup, monkeypatch):
     final = json.dumps(
         {
-            "people": [{"page_id": 100, "content": "Ethan joined Atlas."}],
+            "people": [{"page_id": 100, "anchorId": "stable-person", "content": "Ethan joined Atlas."}],
             "entities": [],
             "events": [],
             "questions": [],
@@ -701,11 +806,14 @@ async def test_redo_restores_frozen_provider_configuration(setup, monkeypatch):
             "user_id": "alice",
             "role": "root",
             "task_id": "t1",
-            "email_context": {**setup.spec, "personId": "stale-mutable-context"},
+            "email_context": {
+                **setup.spec,
+                "people": [{**setup.person, "personId": "stale-mutable-context"}],
+            },
         },
     )
     assert (
-        session._run_memory_extraction.call_args.kwargs["email_context"]["personId"]
+        session._run_memory_extraction.call_args.kwargs["email_context"]["people"][0]["personId"]
         == "current-contact"
     )
     assert session._run_memory_extraction.call_args.kwargs["memory_policy"] == email_memory_policy()
@@ -741,7 +849,7 @@ async def test_redo_fails_closed_if_email_context_was_lost(setup, monkeypatch):
 async def test_unread_citation_is_repaired_by_reading_source_before_write(setup, monkeypatch):
     final = json.dumps(
         {
-            "people": [{"page_id": 100, "content": "Ethan selected proposal B. " + HISTORY_REF}],
+            "people": [{"page_id": 100, "anchorId": "stable-person", "content": "Ethan selected proposal B. " + HISTORY_REF}],
             "entities": [],
             "events": [],
             "questions": [],
@@ -789,7 +897,7 @@ async def test_unread_citation_is_repaired_by_reading_source_before_write(setup,
 async def test_repeated_invalid_citation_exhausts_repairs_without_writing(setup):
     final = json.dumps(
         {
-            "people": [{"page_id": 100, "content": "Unsupported assertion " + HISTORY_REF}],
+            "people": [{"page_id": 100, "anchorId": "stable-person", "content": "Unsupported assertion " + HISTORY_REF}],
             "entities": [],
             "events": [],
             "questions": [],

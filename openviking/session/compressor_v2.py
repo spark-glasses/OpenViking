@@ -280,7 +280,7 @@ class SessionCompressorV2:
 
             spec = EmailContext.model_validate(email_context)
             spec.validate_owner(ctx)
-            registry = create_email_registry(spec)
+            registry = create_email_registry()
             allowed_memory_types = set(EMAIL_MEMORY_TYPES)
             allow_self_memory = True
             allowed_peer_ids = set()
@@ -435,13 +435,15 @@ class SessionCompressorV2:
                         relative = uri[len(context_provider.root_uri) :]
                         from openviking.session.memory.question_store import is_question_uri
 
-                        if relative.split("/", 1)[
-                            0
-                        ] not in EMAIL_MEMORY_TYPES and not is_question_uri(uri, ctx):
+                        if (
+                            relative != "profile.md"
+                            and relative.split("/", 1)[0] not in EMAIL_MEMORY_TYPES
+                            and not is_question_uri(uri, ctx)
+                        ):
                             raise ValueError("Recovery target outside email memory types")
                         if (
                             relative.startswith("people/")
-                            and uri != context_provider.spec.personMemoryUri
+                            and uri not in context_provider.spec.person_uris()
                             and not is_question_uri(uri, ctx)
                         ):
                             raise ValueError("Recovery target is a different person")
@@ -589,10 +591,7 @@ class SessionCompressorV2:
                     if operations.upsert_operations or recovery_uris:
                         # Revalidate the live binding after reasoning and immediately before writes.
                         # Spark's authenticated source bridge rejects stale/deleted batch bindings.
-                        await context_provider._email_request(
-                            "searchEmails",
-                            {"personId": email_context["personId"], "maxResults": 1},
-                        )
+                        await context_provider._email_request("searchEmails", {"maxResults": 1})
             elif meeting_context:
                 orchestrator.max_iterations = 16
                 operations, tools_used = await asyncio.wait_for(orchestrator.run(), timeout=300)

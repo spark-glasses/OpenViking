@@ -45,6 +45,15 @@ def _contains_alias(text, alias):
     return re.search(left + re.escape(alias) + right, text) is not None
 
 
+def is_person_card(operation):
+    """Whether an entities operation describes an individual rather than an object."""
+    return operation.memory_type == "entities" and (
+        _alias_key(operation.memory_fields.get("category")) in _PERSON_CATEGORIES
+        or bool(operation.memory_fields.get("personId"))
+        or bool(operation.memory_fields.get("anchorId"))
+    )
+
+
 class CanonicalPeople:
     def __init__(self, records):
         self.records = {p["memoryUri"]: p for p in records if not p.get("deleted")}
@@ -122,12 +131,7 @@ class CanonicalPeople:
                     if operation.memory_fields.get("anchorId") not in (None, anchor):
                         raise ValueError("Person anchorId conflicts with its canonical URI")
                     operation.memory_fields["anchorId"] = anchor
-                is_person_entity = (
-                    _alias_key(operation.memory_fields.get("category")) in _PERSON_CATEGORIES
-                    or bool(operation.memory_fields.get("personId"))
-                    or bool(operation.memory_fields.get("anchorId"))
-                )
-                if operation.memory_type == "entities" and is_person_entity:
+                if is_person_card(operation):
                     name = operation.memory_fields.get("name", "")
                     # A title or company suffix does not create a new identity.
                     # Keep the same token-boundary matching as source discovery,
