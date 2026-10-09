@@ -4,13 +4,14 @@ description: |
   or another thing they care about at any granularity. An external workspace or
   project is an entity, not automatically a Focus. Use listFocuses, reuse an existing
   identity and read it fully. ensureFocus creates an evidence-backed discovery in
-  forming state; do not infer importance from message volume alone. User-created
-  Focus intent and archived choices are authoritative.
+  forming state; do not infer importance from message volume alone. A forming
+  Focus is your draft. An active or archived one is the user's: its name and
+  status are theirs to change, and an intent they stated is authoritative.
 directory: "viking://user/{{ user_space }}/memories/focuses"
 filename_template: "{{ focusId }}/memory.md"
 enabled: true
 operation_mode: upsert
-embedding_template: "{{ name }}\n{{ userIntent }}\n{{ summary }}\n{{ content }}"
+embedding_template: "{{ name }}\n{{ intent }}\n{{ summary }}\n{{ content }}"
 fields:
   - name: focusId
     type: string
@@ -18,11 +19,15 @@ fields:
     merge_op: immutable
   - name: name
     type: string
-    description: "Human-readable name; preserve a user's chosen name. Empty means unchanged."
+    description: "Human-readable name. Only a forming Focus may be renamed; leave empty otherwise. Empty means unchanged."
+    merge_op: replace
+  - name: intent
+    type: string
+    description: "Why this matters to the user. Leave empty when intentSource is user: the user said it themselves. Otherwise write your grounded understanding from the evidence, or improve an earlier guess; it is recorded as a guess."
     merge_op: replace
   - name: summary
     type: string
-    description: "Up to 600 characters of grounded understanding useful on the Focus card."
+    description: "Up to 600 characters of grounded understanding useful on the Focus card. Keep what still holds, whether you or the user wrote it; revise or rewrite as the evidence requires."
     merge_op: replace
   - name: status
     type: string

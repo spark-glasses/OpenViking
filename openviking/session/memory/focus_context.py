@@ -17,8 +17,10 @@ Do not split every status change or utterance into its own file. Independent lat
 remain separate and linked. Occurrence time comes from the source, not today's ingestion time;
 unknown time remains unknown. Source pagination and recording chunks are not event boundaries.
 Focuses express what the user cares about. Use the supplied active priorities as relevant context,
-not as proof all inputs concern them. User intent is authoritative. A connected workspace,
-frequent messages, or an assistant's suggestion alone does not establish a personal priority.
+not as proof all inputs concern them. An intent whose intentSource is user is the user's own
+statement and is authoritative; one marked guessed is an earlier guess you may improve. A forming
+Focus is a draft the user has not confirmed. A connected workspace, frequent messages, or an
+assistant's suggestion alone does not establish a personal priority.
 Keep objects useful even without a Focus. Cite related existing memory URIs and original evidence;
 do not duplicate complete source material across narratives. Preserve uncertainty as questions.
 """
@@ -61,10 +63,10 @@ register_tool(
 register_tool(
     FocusTool(
         "ensureFocus",
-        "Establish an evidence-backed personal-priority discovery after searching existing Focuses. This does not declare a user-created priority. Evidence must be original material actually read, not an existing memory or assistant restatement.",
+        "Establish an evidence-backed personal-priority discovery after searching existing Focuses. It starts as forming: your draft, which the user has not confirmed. intent is your grounded understanding of why this matters to the user; it is recorded as a guess until the user states their own. Evidence must be original material actually read, not an existing memory or assistant restatement.",
         {
             "name": {"type": "string", "minLength": 1, "maxLength": 200},
-            "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "intent": {"type": "string", "minLength": 1, "maxLength": 2000},
             "evidence": {
                 "type": "array",
                 "minItems": 1,
@@ -81,7 +83,7 @@ register_tool(
                 },
             },
         },
-        ["name", "reason", "evidence"],
+        ["name", "intent", "evidence"],
     )
 )
 
@@ -146,7 +148,7 @@ class FocusContext:
         refs = sorted({item["sourceRef"] for item in evidence})
         key = hashlib.sha256(json.dumps([args["name"].casefold(), refs]).encode()).hexdigest()
         result = await self.store.ensure(
-            name=args["name"], create_key=key, discovery_reason=args["reason"], source_refs=refs
+            name=args["name"], create_key=key, intent=args["intent"], source_refs=refs
         )
         page = await self.store.get(result["focusId"])
         self.provider.register_memory_read(page.uri, page)

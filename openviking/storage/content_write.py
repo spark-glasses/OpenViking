@@ -78,6 +78,27 @@ class ContentWriteCoordinator:
         if is_question_uri(normalized_uri, ctx):
             raise InvalidArgumentError("Question pages must be updated through QuestionStore")
 
+        # A Focus's record and page have one writer, which checks what the
+        # user's side may change and keeps the two files and the index together.
+        from openviking.session.memory.focus_paths import focus_file_from_uri
+        from openviking.session.memory.question_store import memory_root
+
+        focus_file = focus_file_from_uri(normalized_uri, memory_root(ctx))
+        if focus_file:
+            from openviking.session.memory.focus_store import FocusStore
+
+            written_uri = await FocusStore(self._viking_fs, ctx, self._vikingdb).write_file(
+                *focus_file, content, mode
+            )
+            return {
+                "uri": written_uri,
+                "root_uri": memory_root(ctx) + "focuses",
+                "context_type": "memory",
+                "mode": mode,
+                "written_bytes": len(content.encode("utf-8")),
+                "content_updated": True,
+            }
+
         if mode == "create":
             return await self._create_and_write(
                 uri=normalized_uri,

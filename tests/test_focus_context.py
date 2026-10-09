@@ -26,7 +26,7 @@ async def test_discovery_requires_read_source_and_registers_canonical_memory(sto
     focuses, write = context(store)
     args = dict(
         name="Health",
-        reason="The user is prioritizing sleep",
+        intent="The user is prioritizing sleep",
         evidence=[
             {"sourceRef": "conversation:one", "quote": "I want to sleep better"},
         ],
@@ -44,6 +44,7 @@ async def test_discovery_requires_read_source_and_registers_canonical_memory(sto
     assert first["focusId"] == repeated["focusId"]
     assert first["uri"] in write.read_files
     assert first["status"] == "forming"
+    assert first["intent"] == "The user is prioritizing sleep" and first["intentSource"] == "guessed"
     assert (await store.list(status="active"))["focuses"] == []
 
 
@@ -56,13 +57,13 @@ async def test_unconfirmed_speaker_cannot_create_or_modify_focus(store):
             "ensureFocus",
             dict(
                 name="Health",
-                reason="A speaker said so",
+                intent="A speaker said so",
                 evidence=[
                     {"sourceRef": "transcript:one", "quote": "I care about health"},
                 ],
             ),
         )
-    existing = await store.ensure(name="Study", create_key="study", origin="user")
+    existing = await store.ensure(name="Study", origin="user")
     write.read_files[existing["uri"]] = await store.get(existing["focusId"])
     op = SimpleNamespace(
         memory_type="focuses",
@@ -77,7 +78,7 @@ async def test_unconfirmed_speaker_cannot_create_or_modify_focus(store):
 @pytest.mark.asyncio
 async def test_validation_uses_read_revision_and_rejects_another_target(store):
     focuses, write = context(store)
-    existing = await store.ensure(name="Study", create_key="study", origin="user")
+    existing = await store.ensure(name="Study", origin="user")
     op = SimpleNamespace(
         memory_type="focuses",
         uris=[existing["uri"]],
