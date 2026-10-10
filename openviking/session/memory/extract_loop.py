@@ -148,9 +148,11 @@ class ExtractLoop:
             allowed_tools = [*allowed_tools, *self._questions.tools]
         if self._focuses:
             allowed_tools = [*allowed_tools, *self._focuses.tools]
+        # A provider may bring tools that exist for its operation only.
+        operation_tools = getattr(self.context_provider, "task_tools", lambda: [])()
         self._tool_schemas = [
             tool.to_schema()
-            for tool in MEMORY_TOOLS_REGISTRY.values()
+            for tool in [*MEMORY_TOOLS_REGISTRY.values(), *operation_tools]
             if tool.name in allowed_tools
         ]
 

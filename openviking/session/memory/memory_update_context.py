@@ -44,6 +44,35 @@ class CollaborationContext(StrictModel):
     coverage: dict = Field(default_factory=dict)
 
 
+class SourceTool(StrictModel):
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    description: str = Field(min_length=1, max_length=8000)
+    parameters: dict
+
+
+class SourceBudget(StrictModel):
+    toolCalls: int = Field(ge=1, le=200)
+    sourceChars: int = Field(ge=1000, le=2000000)
+    seconds: int = Field(ge=30, le=3600)
+
+
+class SourceTask(StrictModel):
+    """Work on an outside source that the caller defines.
+
+    What to do is the operation's text. The tools the model may call come with
+    the task and are carried out by the caller's bridge for `source`; whatever
+    the task is to leave behind, it leaves through them. It writes no memory.
+    """
+
+    source: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
+    tools: list[SourceTool] = Field(min_length=1, max_length=40)
+    budget: SourceBudget
+
+
+# What a source task reads memory with; its own tools may not take these names.
+SOURCE_TASK_MEMORY_TOOLS = ("read", "search", "searchPeople")
+
+
 class UpdateTarget(StrictModel):
     kind: Literal["person", "memory"]
     memoryUri: str = Field(min_length=1, max_length=1000)
@@ -71,6 +100,7 @@ class MemoryUpdateContext(StrictModel):
     text: str = Field(min_length=1, max_length=50000)
     origin: UpdateOrigin | AutomationOrigin
     collaboration: CollaborationContext | None = None
+    sourceTask: SourceTask | None = None
     targets: list[UpdateTarget] = Field(default_factory=list, max_length=20)
     messages: list[UpdateMessage] = Field(default_factory=list, max_length=10000)
     sourceKinds: list[Literal["email", "transcript"]] = Field(default_factory=list, max_length=2)
@@ -80,7 +110,17 @@ class MemoryUpdateContext(StrictModel):
         if len(json.dumps(self.model_dump(), ensure_ascii=False).encode()) > 8000000:
             raise ValueError("Context exceeds the persisted operation snapshot limit")
         self.sourceKinds = sorted(set(self.sourceKinds))
+        if self.sourceTask:
+            if self.collaboration or self.targets or self.messages or self.sourceKinds:
+                raise ValueError("A source task carries only its text, tools and budget")
+            names = [tool.name for tool in self.sourceTask.tools]
+            if len(set(names)) != len(names) or set(names) & set(SOURCE_TASK_MEMORY_TOOLS):
+                raise ValueError("Source task tool names must be distinct and not memory tools")
         return self
+
+    def reasoning_seconds(self):
+        """How long the model may work on this operation."""
+        return self.sourceTask.budget.seconds if self.sourceTask else 300
 
     def validate_owner(self, ctx):
         root = memory_root(ctx)

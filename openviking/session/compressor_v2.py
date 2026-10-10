@@ -339,7 +339,11 @@ class SessionCompressorV2:
         viking_fs = get_viking_fs()
         lock_manager = None
         transaction_handle = None
-        if viking_fs and hasattr(viking_fs, "agfs") and viking_fs.agfs:
+        # A source task writes no memory, so it holds no memory locks while it works.
+        reads_only = bool(memory_update_context and memory_update_context.get("sourceTask"))
+        if reads_only:
+            logger.debug("Source task: running without memory locks")
+        elif viking_fs and hasattr(viking_fs, "agfs") and viking_fs.agfs:
             if email_context or meeting_context or memory_update_context:
                 try:
                     lock_manager = get_lock_manager()
@@ -599,8 +603,16 @@ class SessionCompressorV2:
                     context_provider.validate_operations(operations)
                 await context_provider.before_apply(operations)
             elif memory_update_context:
-                orchestrator.max_iterations = 16
-                operations, tools_used = await asyncio.wait_for(orchestrator.run(), timeout=300)
+                from openviking.session.memory.memory_update_context import MemoryUpdateContext
+
+                update = MemoryUpdateContext.model_validate(memory_update_context)
+                # Each turn may be a single tool call, so a task's turns follow its call budget.
+                orchestrator.max_iterations = (
+                    update.sourceTask.budget.toolCalls + 2 if update.sourceTask else 16
+                )
+                operations, tools_used = await asyncio.wait_for(
+                    orchestrator.run(), timeout=update.reasoning_seconds()
+                )
                 if operations is None:
                     raise RuntimeError("Memory update did not produce a valid operation result")
                 context_provider.validate_operations(operations)

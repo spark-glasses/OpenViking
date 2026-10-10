@@ -17,7 +17,10 @@ from openviking_cli.exceptions import AlreadyExistsError, InvalidArgumentError, 
 
 _BACKGROUND_TASKS = set()
 _LOCAL_LOCKS = {}
-_ACTIVE_SECONDS = 480
+# What an operation is given beyond the time its model may work: to take its
+# locks and write, and for whoever watches it to see that it has ended.
+_APPLY_SECONDS = 120
+_WATCH_SECONDS = 60
 
 
 class MemoryUpdateStore:
@@ -170,23 +173,34 @@ class MemoryUpdateStore:
             record = await self._load(operation_id)
             if record["status"] != "accepted":
                 return
+            archive_uri = record["archiveUri"]
+            try:
+                spec = MemoryUpdateContext.model_validate(
+                    json.loads(
+                        await self.fs.read_file(
+                            archive_uri + "/memory_update_context.json", ctx=self.ctx
+                        )
+                    )
+                )
+            except Exception as exc:
+                record.update(
+                    status="failed",
+                    errors=[type(exc).__name__ + ": " + str(exc)],
+                    partial=False,
+                    retryable=True,
+                )
+                await self._save(record)
+                return
+            extraction_seconds = spec.reasoning_seconds() + _APPLY_SECONDS
             attempt_id = uuid4().hex
             record.update(
                 status="running",
                 phase="reasoning",
                 attemptId=attempt_id,
-                deadlineAt=time.time() + _ACTIVE_SECONDS,
+                deadlineAt=time.time() + extraction_seconds + _WATCH_SECONDS,
             )
             await self._save(record)
-        archive_uri = record["archiveUri"]
         try:
-            spec = MemoryUpdateContext.model_validate(
-                json.loads(
-                    await self.fs.read_file(
-                        archive_uri + "/memory_update_context.json", ctx=self.ctx
-                    )
-                )
-            )
             if spec.input_hash() != record["inputHash"]:
                 raise ValueError("Frozen operation context changed")
             if self.compressor is None:
@@ -260,7 +274,7 @@ class MemoryUpdateStore:
                     memory_update_before_apply=before_apply,
                     memory_update_after_apply=after_apply,
                 ),
-                timeout=420,
+                timeout=extraction_seconds,
             )
             final = await self._load(operation_id)
             if final["status"] == "running":
